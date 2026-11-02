@@ -18,31 +18,32 @@ st.set_page_config(
 CONFIG_FILE = "config.json"
 
 DEFAULT_CONFIG = {
-    "current_age": 40,
+    "current_age": 43,
     "lump_sum_payoff_age": 57,
     "retirement_age": 60,
     "end_age": 90,
-    "gross_salary": 75000.0,
-    "ee_pension_pct": 5.0,
+    "gross_salary": 78000.0,
+    "ee_pension_pct": 10.0,
     "er_pension_pct": 10.0,
     "other_sal_sac": 0.0,
-    "current_pension": 150000.0,
+    "current_pension": 200000.0,
     "pension_growth_rate": 6.0,
-    "spouse_age": 40,
+    "spouse_age": 41,
     "spouse_retirement_age": 60,
     "spouse_current_pension": 100000.0,
-    "spouse_annual_contribution": 6000.0,
+    "spouse_gross_salary": 40000.0,
+    "spouse_pension_pct": 6.0,
     "spouse_pension_growth_rate": 6.0,
     "state_pension_age": 67,
     "state_pension_annual_amount": 12548.0,
     "initial_property_value": 450000.0,
     "downsizing_age": 70,
-    "equity_release_pct": 30.0,
-    "mortgage_balance": 220000.0,
+    "equity_release_pct": 25.0,
+    "mortgage_balance": 260000.0,
     "mortgage_rate": 4.0,
-    "mortgage_monthly_payment": 1200.0,
+    "mortgage_monthly_payment": 1350.0,
     "desired_pension_income": 45000.0,
-    "inflation_rate": 2.5,
+    "inflation_rate": 3.0,
 }
 
 def load_config():
@@ -98,8 +99,11 @@ spouse_retirement_age = st.sidebar.number_input(
 spouse_current_pension = st.sidebar.number_input(
     "Spouse Current Pension Pot (£)", min_value=0.0, value=float(config["spouse_current_pension"]), step=5000.0
 )
-spouse_annual_contribution = st.sidebar.number_input(
-    "Spouse Annual Pension Contribution (£)", min_value=0.0, value=float(config["spouse_annual_contribution"]), step=500.0
+spouse_gross_salary = st.sidebar.number_input(
+    "Spouse Annual Gross Salary (£)", min_value=0.0, value=float(config["spouse_gross_salary"]), step=1000.0
+)
+spouse_pension_pct = st.sidebar.slider(
+    "Spouse Pension Contribution (%)", 0.0, 50.0, float(config["spouse_pension_pct"]), step=0.5
 )
 spouse_pension_growth_rate = (
     st.sidebar.slider(
@@ -225,6 +229,7 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
     net_annual = taxable_salary - income_tax - ni
     return net_annual, income_tax, ni, ee_pen_annual
 
+# Initial baseline for display tab 2
 (
     net_take_home,
     tax_paid,
@@ -232,10 +237,9 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
     ee_contrib_val,
 ) = calculate_take_home(gross_salary, ee_pension_pct, other_sal_sac)
 er_contrib_val = gross_salary * (er_pension_pct / 100)
-total_annual_user_pension_contrib = ee_contrib_val + er_contrib_val
 
 # ==========================================
-# 3. PROJECTION LOGIC (JOINT MODEL + EQUITY RELEASE)
+# 3. PROJECTION LOGIC (JOINT MODEL + INFLATION SALARY GROWTH)
 # ==========================================
 years = np.arange(current_age, end_age + 1)
 
@@ -247,6 +251,7 @@ property_values = []
 mortgage_balances = []
 desired_incomes = []
 actual_incomes = []
+monthly_net_incomes = []
 deltas = []
 
 lump_sum_paid_at_57 = 0.0
@@ -268,6 +273,10 @@ for yr in range(current_age, end_age + 1):
         (1 + inflation_rate) ** years_from_start
     )
 
+    # Inflate current year salaries
+    current_gross_salary = gross_salary * ((1 + inflation_rate) ** years_from_start)
+    current_spouse_salary = spouse_gross_salary * ((1 + inflation_rate) ** years_from_start)
+
     # 1. Property appreciation with inflation
     if yr > current_age:
         curr_property_val *= (1 + inflation_rate)
@@ -281,56 +290,56 @@ for yr in range(current_age, end_age + 1):
 
     # --- DOWNSIZING EVENT ---
     if yr == downsizing_age:
-        # Equity available at downsizing age (Property Value minus remaining mortgage)
         current_equity = max(0.0, curr_property_val - curr_mortgage_pot)
         equity_released_at_downsizing = current_equity * (equity_release_pct / 100)
         curr_liquid_cash += equity_released_at_downsizing
-        # Reduce property value and mortgage proportionally to reflect downsizing
         curr_property_val -= equity_released_at_downsizing
         curr_mortgage_pot = max(0.0, curr_mortgage_pot * (1 - (equity_release_pct / 100)))
 
-    # Accumulation Phase
+    # Accumulation Phase (User & Spouse)
+    user_net_take_home = 0.0
+    spouse_net_take_home = 0.0
+
     if yr < retirement_age:
-        curr_user_pot = (
-            curr_user_pot * (1 + pension_growth_rate)
-            + total_annual_user_pension_contrib
-        )
+        u_net, _, _, u_ee_contrib = calculate_take_home(current_gross_salary, ee_pension_pct, other_sal_sac)
+        u_er_contrib = current_gross_salary * (er_pension_pct / 100)
+        total_user_contrib = u_ee_contrib + u_er_contrib
+
+        curr_user_pot = curr_user_pot * (1 + pension_growth_rate) + total_user_contrib
+        user_net_take_home = u_net
+
         if curr_mortgage_pot > 0 and yr != lump_sum_payoff_age:
             interest = curr_mortgage_pot * mortgage_rate
-            principal_paid = min(
-                curr_mortgage_pot, annual_mortgage_payment - interest
-            )
+            principal_paid = min(curr_mortgage_pot, annual_mortgage_payment - interest)
             if principal_paid < 0:
                 curr_mortgage_pot += interest - annual_mortgage_payment
             else:
                 curr_mortgage_pot = max(0.0, curr_mortgage_pot - principal_paid)
 
     if curr_spouse_age < spouse_retirement_age:
-        curr_spouse_pot = (
-            curr_spouse_pot * (1 + spouse_pension_growth_rate)
-            + spouse_annual_contribution
-        )
+        s_net, _, _, s_ee_contrib = calculate_take_home(current_spouse_salary, spouse_pension_pct, 0.0)
+        s_er_contrib = current_spouse_salary * 0.0  # Assumes spouse contribution is employee-led or modeled via salary sacrifice
+        total_spouse_contrib = s_ee_contrib + s_er_contrib
+
+        curr_spouse_pot = curr_spouse_pot * (1 + spouse_pension_growth_rate) + total_spouse_contrib
+        spouse_net_take_home = s_net
 
     # Decumulation & Drawdown Phase
     user_private_drawdown = 0.0
     if yr >= retirement_age:
         target_share = inflated_desired_income / 2
         user_private_drawdown = min(curr_user_pot, target_share)
-        curr_user_pot = (
-            curr_user_pot - user_private_drawdown
-        ) * (1 + pension_growth_rate)
+        curr_user_pot = (curr_user_pot - user_private_drawdown) * (1 + pension_growth_rate)
         curr_user_pot = max(0.0, curr_user_pot)
 
     spouse_private_drawdown = 0.0
     if curr_spouse_age >= spouse_retirement_age:
         target_share = inflated_desired_income / 2
         spouse_private_drawdown = min(curr_spouse_pot, target_share)
-        curr_spouse_pot = (
-            curr_spouse_pot - spouse_private_drawdown
-        ) * (1 + spouse_pension_growth_rate)
+        curr_spouse_pot = (curr_spouse_pot - spouse_private_drawdown) * (1 + spouse_pension_growth_rate)
         curr_spouse_pot = max(0.0, curr_spouse_pot)
 
-    # Liquid cash buffer drawdown if pension drawdown is less than target
+    # Liquid cash buffer drawdown
     liquid_cash_drawdown = 0.0
     if (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age):
         current_pension_total = user_private_drawdown + spouse_private_drawdown
@@ -358,6 +367,16 @@ for yr in range(current_age, end_age + 1):
     if yr < retirement_age and curr_spouse_age < spouse_retirement_age:
         total_actual_inc = 0.0
 
+    # Calculate average monthly income after tax and payments
+    if yr < retirement_age or curr_spouse_age < spouse_retirement_age:
+        combined_annual_net = user_net_take_home + spouse_net_take_home
+        # Subtract annual mortgage payments while mortgage is active
+        annual_mortgage_outflow = annual_mortgage_payment if curr_mortgage_pot > 0 else 0.0
+        net_after_payments = max(0.0, combined_annual_net - annual_mortgage_outflow)
+        monthly_net = net_after_payments / 12
+    else:
+        monthly_net = total_actual_inc / 12
+
     delta = total_actual_inc - inflated_desired_income if (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age) else -inflated_desired_income
 
     user_pension_balances.append(curr_user_pot)
@@ -368,6 +387,7 @@ for yr in range(current_age, end_age + 1):
     mortgage_balances.append(curr_mortgage_pot)
     desired_incomes.append(inflated_desired_income)
     actual_incomes.append(total_actual_inc)
+    monthly_net_incomes.append(monthly_net)
     deltas.append(delta)
 
 df_proj = pd.DataFrame(
@@ -381,6 +401,7 @@ df_proj = pd.DataFrame(
         "Mortgage Balance (£)": mortgage_balances,
         "Desired Annual Income (£)": desired_incomes,
         "Projected Actual Income (£)": actual_incomes,
+        "Avg Monthly Net Income (£)": monthly_net_incomes,
         "Income Delta (£)": deltas,
     }
 )
@@ -392,7 +413,7 @@ col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 
 with col_m1:
     st.metric(
-        label="Est. Monthly Take-Home",
+        label="Est. Monthly User Take-Home",
         value=f"£{net_take_home / 12:,.2f}",
         help="Net pay after Tax, NI, EE Pension, and Salary Sacrifice",
     )
@@ -431,8 +452,8 @@ st.markdown("---")
 # ==========================================
 # 5. CHARTS & DETAILED ANALYSIS
 # ==========================================
-tab1, tab2, tab3 = st.tabs(
-    ["📊 Household Wealth & Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📊 Household Wealth & Income", "💵 Monthly Net Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
 )
 
 with tab1:
@@ -494,19 +515,20 @@ with tab1:
     st.plotly_chart(fig_wealth, use_container_width=True)
 
     st.subheader("Retirement Income: Desired vs. Actual")
+    df_retire = df_proj[df_proj["Age"] >= retirement_age]
     fig_inc = go.Figure()
     fig_inc.add_trace(
         go.Bar(
-            x=df_proj["Age"],
-            y=df_proj["Projected Actual Income (£)"],
+            x=df_retire["Age"],
+            y=df_retire["Projected Actual Income (£)"],
             name="Projected Actual Household Income",
             marker_color="#2ca02c",
         )
     )
     fig_inc.add_trace(
         go.Scatter(
-            x=df_proj["Age"],
-            y=df_proj["Desired Annual Income (£)"],
+            x=df_retire["Age"],
+            y=df_retire["Desired Annual Income (£)"],
             name="Desired Target Income",
             line=dict(color="#ff7f0e", width=2, dash="dash"),
         )
@@ -521,7 +543,30 @@ with tab1:
     st.plotly_chart(fig_inc, use_container_width=True)
 
 with tab2:
-    st.subheader("Current Salary Breakdown")
+    st.subheader("Average Monthly Income After Tax & Payments")
+    st.markdown(
+        "*During working years: Net household take-home pay minus mortgage payments. During retirement: Net pension and state pension drawdowns.*"
+    )
+    fig_monthly = go.Figure()
+    fig_monthly.add_trace(
+        go.Scatter(
+            x=df_proj["Age"],
+            y=df_proj["Avg Monthly Net Income (£)"],
+            name="Avg Monthly Net Income",
+            line=dict(color="#17becf", width=3),
+            fill="tozeroy",
+        )
+    )
+    fig_monthly.update_layout(
+        xaxis_title="User Age",
+        yaxis_title="Monthly Net Income (£)",
+        hovermode="x unified",
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
+    st.plotly_chart(fig_monthly, use_container_width=True)
+
+with tab3:
+    st.subheader("Current Salary Breakdown (User)")
     breakdown_data = {
         "Component": [
             "Net Take-Home Pay",
@@ -555,13 +600,13 @@ with tab2:
         st.markdown("### Total Annual Package Summary")
         st.write(f"**Gross Salary:** £{gross_salary:,.2f}")
         st.write(f"**Employer Pension Contribution:** £{er_contrib_val:,.2f} / yr")
-        st.write(f"**Spouse Annual Pension Addition:** £{spouse_annual_contribution:,.2f} / yr")
+        st.write(f"**Spouse Gross Salary:** £{spouse_gross_salary:,.2f} / yr")
         st.dataframe(
             df_breakdown.style.format({"Amount (£)": "£{:,.2f}"}),
             use_container_width=True,
         )
 
-with tab3:
+with tab4:
     st.subheader("Projection Master Table")
     st.dataframe(
         df_proj.style.format(
@@ -574,6 +619,7 @@ with tab3:
                 "Mortgage Balance (£)": "£{:,.0f}",
                 "Desired Annual Income (£)": "£{:,.0f}",
                 "Projected Actual Income (£)": "£{:,.0f}",
+                "Avg Monthly Net Income (£)": "£{:,.0f}",
                 "Income Delta (£)": "£{:,.0f}",
             }
         ),
