@@ -35,6 +35,9 @@ DEFAULT_CONFIG = {
     "spouse_pension_growth_rate": 6.0,
     "state_pension_age": 67,
     "state_pension_annual_amount": 12548.0,
+    "initial_property_value": 450000.0,
+    "downsizing_age": 70,
+    "equity_release_pct": 30.0,
     "mortgage_balance": 220000.0,
     "mortgage_rate": 4.0,
     "mortgage_monthly_payment": 1200.0,
@@ -115,21 +118,19 @@ state_pension_annual_amount = st.sidebar.number_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("💼 User Income & Salary Sacrifice")
-gross_salary = st.sidebar.number_input(
-    "Annual Gross Salary (£)", min_value=0.0, value=float(config["gross_salary"]), step=1000.0
+st.sidebar.header("🏡 Property & Downsizing")
+initial_property_value = st.sidebar.number_input(
+    "Current Property Value (£)", min_value=0.0, value=float(config["initial_property_value"]), step=10000.0
 )
-ee_pension_pct = st.sidebar.slider(
-    "Employee Pension Contribution (%)", 0.0, 50.0, float(config["ee_pension_pct"]), step=0.5
+downsizing_age = st.sidebar.number_input(
+    "Downsizing Age (Equity Release)",
+    min_value=50,
+    max_value=95,
+    value=int(config["downsizing_age"]),
+    step=1,
 )
-er_pension_pct = st.sidebar.slider(
-    "Employer Pension Contribution (%)", 0.0, 30.0, float(config["er_pension_pct"]), step=0.5
-)
-other_sal_sac = st.sidebar.number_input(
-    "Other Annual Salary Sacrifice (£)",
-    min_value=0.0,
-    value=float(config["other_sal_sac"]),
-    step=500.0,
+equity_release_pct = st.sidebar.slider(
+    "Equity Release from Downsizing (%)", 0.0, 100.0, float(config["equity_release_pct"]), step=5.0
 )
 
 st.sidebar.markdown("---")
@@ -145,6 +146,24 @@ mortgage_rate = (
 )
 mortgage_monthly_payment = st.sidebar.number_input(
     "Monthly Mortgage Payment (£)", min_value=0.0, value=float(config["mortgage_monthly_payment"]), step=50.0
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("💼 User Income & Salary Sacrifice")
+gross_salary = st.sidebar.number_input(
+    "Annual Gross Salary (£)", min_value=0.0, value=float(config["gross_salary"]), step=1000.0
+)
+ee_pension_pct = st.sidebar.slider(
+    "Employee Pension Contribution (%)", 0.0, 50.0, float(config["ee_pension_pct"]), step=0.5
+)
+er_pension_pct = st.sidebar.slider(
+    "Employer Pension Contribution (%)", 0.0, 30.0, float(config["er_pension_pct"]), step=0.5
+)
+other_sal_sac = st.sidebar.number_input(
+    "Other Annual Salary Sacrifice (£)",
+    min_value=0.0,
+    value=float(config["other_sal_sac"]),
+    step=500.0,
 )
 
 st.sidebar.markdown("---")
@@ -216,27 +235,30 @@ er_contrib_val = gross_salary * (er_pension_pct / 100)
 total_annual_user_pension_contrib = ee_contrib_val + er_contrib_val
 
 # ==========================================
-# 3. PROJECTION LOGIC (JOINT MODEL)
+# 3. PROJECTION LOGIC (JOINT MODEL + EQUITY RELEASE)
 # ==========================================
 years = np.arange(current_age, end_age + 1)
 
 user_pension_balances = []
 spouse_pension_balances = []
 combined_pension_balances = []
+liquid_cash_balances = []
+property_values = []
 mortgage_balances = []
 desired_incomes = []
 actual_incomes = []
 deltas = []
 
 lump_sum_paid_at_57 = 0.0
-user_pot_at_57_pre_payoff = 0.0
+equity_released_at_downsizing = 0.0
 
 curr_user_pot = current_pension
 curr_spouse_pot = spouse_current_pension
+curr_liquid_cash = 0.0
+curr_property_val = initial_property_value
 curr_mortgage_pot = mortgage_balance
 annual_mortgage_payment = mortgage_monthly_payment * 12
 
-# Track corresponding spouse age offset
 spouse_age_offset = spouse_age - current_age
 
 for yr in range(current_age, end_age + 1):
@@ -246,16 +268,28 @@ for yr in range(current_age, end_age + 1):
         (1 + inflation_rate) ** years_from_start
     )
 
+    # 1. Property appreciation with inflation
+    if yr > current_age:
+        curr_property_val *= (1 + inflation_rate)
+
     # --- AGE 57 SPECIAL EVENT: LUMP-SUM MORTGAGE PAYOFF ---
     if yr == lump_sum_payoff_age:
-        user_pot_at_57_pre_payoff = curr_user_pot
         if curr_mortgage_pot > 0:
             lump_sum_paid_at_57 = min(curr_mortgage_pot, curr_user_pot)
             curr_user_pot -= lump_sum_paid_at_57
             curr_mortgage_pot = max(0.0, curr_mortgage_pot - lump_sum_paid_at_57)
 
-    # 1. Accumulation Phase (Before respective retirements)
-    # User Accumulation
+    # --- DOWNSIZING EVENT ---
+    if yr == downsizing_age:
+        # Equity available at downsizing age (Property Value minus remaining mortgage)
+        current_equity = max(0.0, curr_property_val - curr_mortgage_pot)
+        equity_released_at_downsizing = current_equity * (equity_release_pct / 100)
+        curr_liquid_cash += equity_released_at_downsizing
+        # Reduce property value and mortgage proportionally to reflect downsizing
+        curr_property_val -= equity_released_at_downsizing
+        curr_mortgage_pot = max(0.0, curr_mortgage_pot * (1 - (equity_release_pct / 100)))
+
+    # Accumulation Phase
     if yr < retirement_age:
         curr_user_pot = (
             curr_user_pot * (1 + pension_growth_rate)
@@ -271,18 +305,15 @@ for yr in range(current_age, end_age + 1):
             else:
                 curr_mortgage_pot = max(0.0, curr_mortgage_pot - principal_paid)
 
-    # Spouse Accumulation
     if curr_spouse_age < spouse_retirement_age:
         curr_spouse_pot = (
             curr_spouse_pot * (1 + spouse_pension_growth_rate)
             + spouse_annual_contribution
         )
 
-    # 2. Decumulation Phase
-    # User Private Pension Drawdown
+    # Decumulation & Drawdown Phase
     user_private_drawdown = 0.0
     if yr >= retirement_age:
-        # Target proportionate share or take what's needed up to half target
         target_share = inflated_desired_income / 2
         user_private_drawdown = min(curr_user_pot, target_share)
         curr_user_pot = (
@@ -290,7 +321,6 @@ for yr in range(current_age, end_age + 1):
         ) * (1 + pension_growth_rate)
         curr_user_pot = max(0.0, curr_user_pot)
 
-    # Spouse Private Pension Drawdown
     spouse_private_drawdown = 0.0
     if curr_spouse_age >= spouse_retirement_age:
         target_share = inflated_desired_income / 2
@@ -300,28 +330,41 @@ for yr in range(current_age, end_age + 1):
         ) * (1 + spouse_pension_growth_rate)
         curr_spouse_pot = max(0.0, curr_spouse_pot)
 
-    # State Pensions (Indexed with Inflation)
-    inflated_state_pension = state_pension_annual_amount * (
-        (1 + inflation_rate) ** years_from_start
-    )
-    user_state_pension = inflated_state_pension if yr >= state_pension_age else 0.0
-    spouse_state_pension = inflated_state_pension if curr_spouse_age >= state_pension_age else 0.0
+    # Liquid cash buffer drawdown if pension drawdown is less than target
+    liquid_cash_drawdown = 0.0
+    if (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age):
+        current_pension_total = user_private_drawdown + spouse_private_drawdown
+        inflated_state_pension = state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)
+        u_state = inflated_state_pension if yr >= state_pension_age else 0.0
+        s_state = inflated_state_pension if curr_spouse_age >= state_pension_age else 0.0
+        
+        current_total = current_pension_total + u_state + s_state
+        shortfall = inflated_desired_income - current_total
+        if shortfall > 0 and curr_liquid_cash > 0:
+            liquid_cash_drawdown = min(curr_liquid_cash, shortfall)
+            curr_liquid_cash -= liquid_cash_drawdown
+
+    user_state_pension = (state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)) if yr >= state_pension_age else 0.0
+    spouse_state_pension = (state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)) if curr_spouse_age >= state_pension_age else 0.0
 
     total_actual_inc = (
         user_private_drawdown
         + spouse_private_drawdown
         + user_state_pension
         + spouse_state_pension
+        + liquid_cash_drawdown
     )
     
     if yr < retirement_age and curr_spouse_age < spouse_retirement_age:
-        total_actual_inc = 0.0  # Neither retired yet
+        total_actual_inc = 0.0
 
     delta = total_actual_inc - inflated_desired_income if (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age) else -inflated_desired_income
 
     user_pension_balances.append(curr_user_pot)
     spouse_pension_balances.append(curr_spouse_pot)
     combined_pension_balances.append(curr_user_pot + curr_spouse_pot)
+    liquid_cash_balances.append(curr_liquid_cash)
+    property_values.append(curr_property_val)
     mortgage_balances.append(curr_mortgage_pot)
     desired_incomes.append(inflated_desired_income)
     actual_incomes.append(total_actual_inc)
@@ -333,6 +376,8 @@ df_proj = pd.DataFrame(
         "User Pension (£)": user_pension_balances,
         "Spouse Pension (£)": spouse_pension_balances,
         "Combined Pension Pot (£)": combined_pension_balances,
+        "Liquid Cash (£)": liquid_cash_balances,
+        "Property Value (£)": property_values,
         "Mortgage Balance (£)": mortgage_balances,
         "Desired Annual Income (£)": desired_incomes,
         "Projected Actual Income (£)": actual_incomes,
@@ -354,10 +399,9 @@ with col_m1:
 
 with col_m2:
     st.metric(
-        label="Mortgage Payoff at Age 57",
-        value=f"£{lump_sum_paid_at_57:,.0f}",
-        delta=f"-£{lump_sum_paid_at_57:,.0f} from User Pot",
-        delta_color="inverse",
+        label=f"Equity Released at Age {downsizing_age}",
+        value=f"£{equity_released_at_downsizing:,.0f}",
+        delta=f"{equity_release_pct}% of Home Equity",
     )
 
 with col_m3:
@@ -373,13 +417,14 @@ with col_m4:
     depletion_rows = df_proj[
         (df_proj["Age"] >= retirement_age)
         & (df_proj["Combined Pension Pot (£)"] <= 0)
+        & (df_proj["Liquid Cash (£)"] <= 0)
     ]
     runout_age = (
         f"Age {depletion_rows['Age'].iloc[0]}"
         if not depletion_rows.empty
         else "Sustainable"
     )
-    st.metric(label="Pot Depletion Age", value=runout_age)
+    st.metric(label="Depletion / Shortfall Age", value=runout_age)
 
 st.markdown("---")
 
@@ -391,7 +436,7 @@ tab1, tab2, tab3 = st.tabs(
 )
 
 with tab1:
-    st.subheader("Combined Pension Pots vs. Mortgage Balance")
+    st.subheader("Combined Wealth: Pensions, Liquid Cash & Property")
     fig_wealth = go.Figure()
     fig_wealth.add_trace(
         go.Scatter(
@@ -404,17 +449,17 @@ with tab1:
     fig_wealth.add_trace(
         go.Scatter(
             x=df_proj["Age"],
-            y=df_proj["User Pension (£)"],
-            name="User Private Pension",
-            line=dict(color="#aec7e8", width=1.5, dash="dot"),
+            y=df_proj["Liquid Cash (£)"],
+            name="Liquid Cash (Downsizing)",
+            line=dict(color="#2ca02c", width=2, dash="dot"),
         )
     )
     fig_wealth.add_trace(
         go.Scatter(
             x=df_proj["Age"],
-            y=df_proj["Spouse Pension (£)"],
-            name="Spouse Private Pension",
-            line=dict(color="#ffbb78", width=1.5, dash="dot"),
+            y=df_proj["Property Value (£)"],
+            name="Property Value",
+            line=dict(color="#9467bd", width=2),
         )
     )
     fig_wealth.add_trace(
@@ -422,7 +467,7 @@ with tab1:
             x=df_proj["Age"],
             y=df_proj["Mortgage Balance (£)"],
             name="Mortgage Balance",
-            line=dict(color="#d62728", width=3, dash="dash"),
+            line=dict(color="#d62728", width=2, dash="dash"),
         )
     )
     if lump_sum_paid_at_57 > 0:
@@ -433,6 +478,13 @@ with tab1:
             annotation_text="Mortgage Cleared (Age 57)",
             annotation_position="top left",
         )
+    fig_wealth.add_vline(
+        x=downsizing_age,
+        line_dash="dot",
+        line_color="green",
+        annotation_text=f"Downsize (Age {downsizing_age})",
+        annotation_position="top right",
+    )
     fig_wealth.update_layout(
         xaxis_title="User Age",
         yaxis_title="Amount (£)",
@@ -441,7 +493,7 @@ with tab1:
     )
     st.plotly_chart(fig_wealth, use_container_width=True)
 
-    st.subheader("Retirement Income (Private + State): Desired vs. Actual")
+    st.subheader("Retirement Income: Desired vs. Actual")
     fig_inc = go.Figure()
     fig_inc.add_trace(
         go.Bar(
@@ -517,6 +569,8 @@ with tab3:
                 "User Pension (£)": "£{:,.0f}",
                 "Spouse Pension (£)": "£{:,.0f}",
                 "Combined Pension Pot (£)": "£{:,.0f}",
+                "Liquid Cash (£)": "£{:,.0f}",
+                "Property Value (£)": "£{:,.0f}",
                 "Mortgage Balance (£)": "£{:,.0f}",
                 "Desired Annual Income (£)": "£{:,.0f}",
                 "Projected Actual Income (£)": "£{:,.0f}",
