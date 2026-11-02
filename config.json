@@ -1,0 +1,17 @@
+{
+  "current_age": 40,
+  "lump_sum_payoff_age": 57,
+  "retirement_age": 60,
+  "end_age": 90,
+  "gross_salary": 75000.0,
+  "ee_pension_pct": 5.0,
+  "er_pension_pct": 10.0,
+  "other_sal_sac": 0.0,
+  "current_pension": 150000.0,
+  "pension_growth_rate": 6.0,
+  "mortgage_balance": 220000.0,
+  "mortgage_rate": 4.0,
+  "mortgage_monthly_payment": 1200.0,
+  "desired_pension_income": 35000.0,
+  "inflation_rate": 2.5
+}
