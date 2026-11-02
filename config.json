@@ -6,14 +6,15 @@
   "gross_salary": 78000.0,
   "ee_pension_pct": 10.0,
   "er_pension_pct": 10.0,
-  "other_sal_sac": 450.0,
+  "other_sal_sac": 0.0,
   "current_pension": 200000.0,
-  "pension_growth_rate": 5.0,
+  "pension_growth_rate": 6.0,
   "spouse_age": 41,
   "spouse_retirement_age": 60,
-  "spouse_current_pension": 10000.0,
-  "spouse_annual_contribution": 2400.0,
-  "spouse_pension_growth_rate": 5.0,
+  "spouse_current_pension": 100000.0,
+  "spouse_gross_salary": 45000.0,
+  "spouse_pension_pct": 5.0,
+  "spouse_pension_growth_rate": 6.0,
   "state_pension_age": 67,
   "state_pension_annual_amount": 12548.0,
   "initial_property_value": 520000.0,
@@ -23,5 +24,5 @@
   "mortgage_rate": 4.0,
   "mortgage_monthly_payment": 1350.0,
   "desired_pension_income": 45000.0,
-  "inflation_rate": 3
+  "inflation_rate": 3.0
 }
