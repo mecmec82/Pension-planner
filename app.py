@@ -1,7 +1,9 @@
+import json
+import os
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as gg
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
@@ -10,56 +12,91 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ==========================================
+# 0. LOAD CONFIGURATION
+# ==========================================
+CONFIG_FILE = "config.json"
+
+DEFAULT_CONFIG = {
+    "current_age": 40,
+    "lump_sum_payoff_age": 57,
+    "retirement_age": 60,
+    "end_age": 90,
+    "gross_salary": 75000.0,
+    "ee_pension_pct": 5.0,
+    "er_pension_pct": 10.0,
+    "other_sal_sac": 0.0,
+    "current_pension": 150000.0,
+    "pension_growth_rate": 6.0,
+    "mortgage_balance": 220000.0,
+    "mortgage_rate": 4.0,
+    "mortgage_monthly_payment": 1200.0,
+    "desired_pension_income": 35000.0,
+    "inflation_rate": 2.5,
+}
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return {**DEFAULT_CONFIG, **json.load(f)}
+        except Exception as e:
+            st.warning(f"Error loading {CONFIG_FILE}: {e}. Using defaults.")
+    return DEFAULT_CONFIG
+
+config = load_config()
+
 st.title("📈 Personal Financial & Retirement Planner")
 
 # ==========================================
-# 1. SIDEBAR INPUTS
+# 1. SIDEBAR INPUTS (Initialized from config.json)
 # ==========================================
 st.sidebar.header("👤 Age & Demographics")
 current_age = st.sidebar.number_input(
-    "Current Age", min_value=18, max_value=80, value=40, step=1
+    "Current Age", min_value=18, max_value=56, value=int(config["current_age"]), step=1
 )
+lump_sum_payoff_age = int(config["lump_sum_payoff_age"])
 retirement_age = st.sidebar.number_input(
-    "Retirement Age (Access Pension)",
-    min_value=current_age + 1,
+    "Retirement Age (Start Drawing Pension)",
+    min_value=57,
     max_value=90,
-    value=60,
+    value=int(config["retirement_age"]),
     step=1,
 )
 end_age = st.sidebar.number_input(
     "Target Horizon / End Age",
     min_value=retirement_age + 1,
     max_value=110,
-    value=90,
+    value=int(config["end_age"]),
     step=1,
 )
 
 st.sidebar.markdown("---")
 st.sidebar.header("💼 Income & Salary Sacrifice")
 gross_salary = st.sidebar.number_input(
-    "Annual Gross Salary (£)", min_value=0.0, value=75000.0, step=1000.0
+    "Annual Gross Salary (£)", min_value=0.0, value=float(config["gross_salary"]), step=1000.0
 )
 ee_pension_pct = st.sidebar.slider(
-    "Employee Pension Contribution (%)", 0.0, 50.0, 5.0, step=0.5
+    "Employee Pension Contribution (%)", 0.0, 50.0, float(config["ee_pension_pct"]), step=0.5
 )
 er_pension_pct = st.sidebar.slider(
-    "Employer Pension Contribution (%)", 0.0, 30.0, 10.0, step=0.5
+    "Employer Pension Contribution (%)", 0.0, 30.0, float(config["er_pension_pct"]), step=0.5
 )
 other_sal_sac = st.sidebar.number_input(
-    "Other Annual Salary Sacrifice (EV, Cycle, etc.) (£)",
+    "Other Annual Salary Sacrifice (£)",
     min_value=0.0,
-    value=0.0,
+    value=float(config["other_sal_sac"]),
     step=500.0,
 )
 
 st.sidebar.markdown("---")
 st.sidebar.header("📊 Current Balances & Growth Rates")
 current_pension = st.sidebar.number_input(
-    "Current Pension Pot (£)", min_value=0.0, value=150000.0, step=5000.0
+    "Current Pension Pot (£)", min_value=0.0, value=float(config["current_pension"]), step=5000.0
 )
 pension_growth_rate = (
     st.sidebar.slider(
-        "Net Pension Growth Rate (Post-Fees) (%)", 0.0, 15.0, 6.0, step=0.5
+        "Net Pension Growth Rate (Post-Fees) (%)", 0.0, 15.0, float(config["pension_growth_rate"]), step=0.5
     )
     / 100
 )
@@ -67,16 +104,16 @@ pension_growth_rate = (
 st.sidebar.markdown("---")
 st.sidebar.header("🏡 Mortgage Details")
 mortgage_balance = st.sidebar.number_input(
-    "Current Mortgage Balance (£)", min_value=0.0, value=220000.0, step=5000.0
+    "Current Mortgage Balance (£)", min_value=0.0, value=float(config["mortgage_balance"]), step=5000.0
 )
 mortgage_rate = (
     st.sidebar.slider(
-        "Mortgage Interest Rate (%)", 0.0, 12.0, 4.0, step=0.25
+        "Mortgage Interest Rate (%)", 0.0, 12.0, float(config["mortgage_rate"]), step=0.25
     )
     / 100
 )
 mortgage_monthly_payment = st.sidebar.number_input(
-    "Monthly Mortgage Payment (£)", min_value=0.0, value=1200.0, step=50.0
+    "Monthly Mortgage Payment (£)", min_value=0.0, value=float(config["mortgage_monthly_payment"]), step=50.0
 )
 
 st.sidebar.markdown("---")
@@ -84,18 +121,18 @@ st.sidebar.header("🎯 Retirement Goals")
 desired_pension_income = st.sidebar.number_input(
     "Desired Annual Net Income in Retirement (£)",
     min_value=0.0,
-    value=35000.0,
+    value=float(config["desired_pension_income"]),
     step=1000.0,
 )
 inflation_rate = (
     st.sidebar.slider(
-        "Expected Inflation Rate (%)", 0.0, 10.0, 2.5, step=0.25
+        "Expected Inflation Rate (%)", 0.0, 10.0, float(config["inflation_rate"]), step=0.25
     )
     / 100
 )
 
 # ==========================================
-# 2. TAX CALCULATIONS (UK 2024/25 Baseline)
+# 2. TAX CALCULATIONS (UK Baseline)
 # ==========================================
 def calculate_take_home(salary, ee_pen_pct, sal_sac):
     ee_pen_annual = salary * (ee_pen_pct / 100)
@@ -107,36 +144,28 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
         reduction = (taxable_salary - 100000) / 2
         personal_allowance = max(0.0, personal_allowance - reduction)
 
-    # Income Tax Bands
     taxable_income = max(0.0, taxable_salary - personal_allowance)
     income_tax = 0.0
 
-    basic_band = 37700.0  # Up to 50,270 total
-    higher_band = 74730.0  # 50,271 to 125,140
+    basic_band = 37700.0
+    higher_band = 74730.0
 
     if taxable_income > 0:
-        b_tax = min(taxable_income, basic_band) * 0.20
-        income_tax += b_tax
+        income_tax += min(taxable_income, basic_band) * 0.20
     if taxable_income > basic_band:
-        h_tax = (
-            min(taxable_income - basic_band, higher_band) * 0.40
-        )
-        income_tax += h_tax
+        income_tax += min(taxable_income - basic_band, higher_band) * 0.40
     if taxable_income > (basic_band + higher_band):
-        a_tax = (taxable_income - basic_band - higher_band) * 0.45
-        income_tax += a_tax
+        income_tax += (taxable_income - basic_band - higher_band) * 0.45
 
-    # National Insurance (Class 1 Employee - 8% main rate, 2% upper)
+    # National Insurance (Class 1 Employee)
     ni = 0.0
     ni_threshold = 12570.0
     upper_reg_limit = 50270.0
 
     if taxable_salary > ni_threshold:
-        main_ni_income = min(taxable_salary, upper_reg_limit) - ni_threshold
-        ni += main_ni_income * 0.08
+        ni += (min(taxable_salary, upper_reg_limit) - ni_threshold) * 0.08
     if taxable_salary > upper_reg_limit:
-        upper_ni_income = taxable_salary - upper_reg_limit
-        ni += upper_ni_income * 0.02
+        ni += (taxable_salary - upper_reg_limit) * 0.02
 
     net_annual = taxable_salary - income_tax - ni
     return net_annual, income_tax, ni, ee_pen_annual
@@ -151,9 +180,8 @@ er_contrib_val = gross_salary * (er_pension_pct / 100)
 total_annual_pension_contrib = ee_contrib_val + er_contrib_val
 
 # ==========================================
-# 3. PROJECTION LOGIC
+# 3. PROJECTION LOGIC (WITH LUMP-SUM PAYOFF AT 57)
 # ==========================================
-years_to_sim = end_age - current_age
 years = np.arange(current_age, end_age + 1)
 
 pension_balances = []
@@ -161,44 +189,51 @@ mortgage_balances = []
 desired_incomes = []
 actual_incomes = []
 deltas = []
+lump_sum_deducted = 0.0
+lump_sum_paid_at_57 = 0.0
+pension_pot_at_57_pre_payoff = 0.0
 
 curr_pension_pot = current_pension
 curr_mortgage_pot = mortgage_balance
 annual_mortgage_payment = mortgage_monthly_payment * 12
 
 for yr in range(current_age, end_age + 1):
-    # Adjust target income for inflation
     years_from_start = yr - current_age
     inflated_desired_income = desired_pension_income * (
         (1 + inflation_rate) ** years_from_start
     )
 
-    # 1. Accumulation Phase
+    # --- AGE 57 SPECIAL EVENT: LUMP-SUM MORTGAGE PAYOFF ---
+    if yr == lump_sum_payoff_age:
+        pension_pot_at_57_pre_payoff = curr_pension_pot
+        if curr_mortgage_pot > 0:
+            lump_sum_paid_at_57 = min(curr_mortgage_pot, curr_pension_pot)
+            curr_pension_pot -= lump_sum_paid_at_57
+            curr_mortgage_pot = max(0.0, curr_mortgage_pot - lump_sum_paid_at_57)
+            lump_sum_deducted = lump_sum_paid_at_57
+
+    # 1. Accumulation Phase (Before Retirement)
     if yr < retirement_age:
-        # Pension growth + contributions
         curr_pension_pot = (
             curr_pension_pot * (1 + pension_growth_rate)
             + total_annual_pension_contrib
         )
         actual_inc = 0.0
-        delta = -inflated_desired_income  # Not drawing yet
+        delta = -inflated_desired_income
 
-        # Mortgage repayment schedule
-        if curr_mortgage_pot > 0:
+        if curr_mortgage_pot > 0 and yr != lump_sum_payoff_age:
             interest = curr_mortgage_pot * mortgage_rate
             principal_paid = min(
                 curr_mortgage_pot, annual_mortgage_payment - interest
             )
-            if principal_paid < 0:  # Payment doesn't cover interest
+            if principal_paid < 0:
                 curr_mortgage_pot += interest - annual_mortgage_payment
             else:
                 curr_mortgage_pot = max(0.0, curr_mortgage_pot - principal_paid)
-        else:
-            curr_mortgage_pot = 0.0
 
     # 2. Decumulation Phase (Retirement)
     else:
-        curr_mortgage_pot = 0.0  # Assume mortgage cleared or frozen at retirement
+        curr_mortgage_pot = 0.0
         actual_inc = min(curr_pension_pot, inflated_desired_income)
         curr_pension_pot = (
             curr_pension_pot - actual_inc
@@ -238,22 +273,20 @@ with col_m1:
     )
 
 with col_m2:
+    st.metric(
+        label="Mortgage Payoff at Age 57",
+        value=f"£{lump_sum_paid_at_57:,.0f}",
+        delta=f"-£{lump_sum_paid_at_57:,.0f} from Pension Pot",
+        delta_color="inverse",
+    )
+
+with col_m3:
     pot_at_retire = df_proj.loc[
         df_proj["Age"] == retirement_age, "Pension Balance (£)"
     ].values[0]
     st.metric(
         label=f"Pension Pot at Age {retirement_age}",
         value=f"£{pot_at_retire:,.0f}",
-    )
-
-with col_m3:
-    total_gap = sum(
-        [d for d in df_proj.loc[df_proj["Age"] >= retirement_age, "Income Delta (£)"] if d < 0]
-    )
-    st.metric(
-        label="Total Retirement Shortfall",
-        value=f"£{abs(total_gap):,.0f}" if total_gap < 0 else "£0",
-        delta_color="inverse" if total_gap < 0 else "normal",
     )
 
 with col_m4:
@@ -268,6 +301,16 @@ with col_m4:
     )
     st.metric(label="Pot Depletion Age", value=runout_age)
 
+if lump_sum_paid_at_57 > 0:
+    tax_free_allowance_cap = 268275.0
+    max_tax_free_lump_sum = min(pension_pot_at_57_pre_payoff * 0.25, tax_free_allowance_cap)
+    rem_tax_free = max(0.0, max_tax_free_lump_sum - lump_sum_paid_at_57)
+    
+    st.info(
+        f"💡 **Age 57 Mortgage Payoff Event:** Outstanding mortgage of **£{lump_sum_paid_at_57:,.0f}** was cleared using a lump sum from your pension pot at age 57. "
+        f"This leaves an estimated **£{rem_tax_free:,.0f}** remaining of your 25% tax-free pension allowance (capped at £268,275)."
+    )
+
 st.markdown("---")
 
 # ==========================================
@@ -279,9 +322,9 @@ tab1, tab2, tab3 = st.tabs(
 
 with tab1:
     st.subheader("Asset Accumulation vs. Decumulation")
-    fig_wealth = gg.Figure()
+    fig_wealth = go.Figure()
     fig_wealth.add_trace(
-        gg.Scatter(
+        go.Scatter(
             x=df_proj["Age"],
             y=df_proj["Pension Balance (£)"],
             name="Pension Balance",
@@ -289,16 +332,25 @@ with tab1:
         )
     )
     fig_wealth.add_trace(
-        gg.Scatter(
+        go.Scatter(
             x=df_proj["Age"],
             y=df_proj["Mortgage Balance (£)"],
             name="Mortgage Balance",
             line=dict(color="#d62728", width=3, dash="dash"),
         )
     )
+    if lump_sum_paid_at_57 > 0:
+        fig_wealth.add_vline(
+            x=57,
+            line_dash="dot",
+            line_color="purple",
+            annotation_text="Mortgage Cleared (Age 57)",
+            annotation_position="top left",
+        )
     fig_wealth.add_vline(
         x=retirement_age,
         line_dash="dot",
+        line_color="green",
         annotation_text="Retirement Start",
         annotation_position="top right",
     )
@@ -312,9 +364,9 @@ with tab1:
 
     st.subheader("Retirement Income: Desired vs. Projected Actual")
     df_retire = df_proj[df_proj["Age"] >= retirement_age]
-    fig_inc = gg.Figure()
+    fig_inc = go.Figure()
     fig_inc.add_trace(
-        gg.Bar(
+        go.Bar(
             x=df_retire["Age"],
             y=df_retire["Projected Actual Income (£)"],
             name="Projected Actual Income",
@@ -322,7 +374,7 @@ with tab1:
         )
     )
     fig_inc.add_trace(
-        gg.Scatter(
+        go.Scatter(
             x=df_retire["Age"],
             y=df_retire["Desired Annual Income (£)"],
             name="Desired Target Income",
