@@ -192,8 +192,8 @@ end_age = st.sidebar.number_input(
     step=1,
 )
 
-# Target monthly income in today's terms
 target_monthly_net_real = desired_pension_income / 12
+state_pension_monthly_real = (state_pension_annual_amount * 2) / 12
 
 # ==========================================
 # 2. TAX CALCULATIONS (UK Baseline)
@@ -241,7 +241,7 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
 er_contrib_val = gross_salary * (er_pension_pct / 100)
 
 # ==========================================
-# 3. PROJECTION LOGIC (DYNAMIC RETIREMENT CAPPING)
+# 3. PROJECTION LOGIC
 # ==========================================
 years = np.arange(current_age, end_age + 1)
 
@@ -335,27 +335,22 @@ for yr in range(current_age, end_age + 1):
     liquid_cash_drawdown = 0.0
 
     if is_retired:
-        # Net annual shortfall remaining after State Pensions
         annual_needed = max(0.0, inflated_desired_income - total_state_pension)
 
-        # Draw from User Private Pension (if eligible)
         if yr >= retirement_age and curr_user_pot > 0:
             user_private_drawdown = min(curr_user_pot, annual_needed / 2 if (curr_spouse_age >= spouse_retirement_age and curr_spouse_pot > 0) else annual_needed)
             curr_user_pot -= user_private_drawdown
 
-        # Draw from Spouse Private Pension (if eligible)
         remaining_needed = annual_needed - user_private_drawdown
         if curr_spouse_age >= spouse_retirement_age and curr_spouse_pot > 0 and remaining_needed > 0:
             spouse_private_drawdown = min(curr_spouse_pot, remaining_needed)
             curr_spouse_pot -= spouse_private_drawdown
 
-        # Draw remaining shortfall from liquid cash buffer (if any)
         remaining_needed -= spouse_private_drawdown
         if remaining_needed > 0 and curr_liquid_cash > 0:
             liquid_cash_drawdown = min(curr_liquid_cash, remaining_needed)
             curr_liquid_cash -= liquid_cash_drawdown
 
-        # Grow remaining pots post-drawdown
         if yr >= retirement_age:
             curr_user_pot = max(0.0, curr_user_pot * (1 + pension_growth_rate))
         if curr_spouse_age >= spouse_retirement_age:
@@ -444,13 +439,85 @@ with col_m4:
 st.markdown("---")
 
 # ==========================================
-# 5. CHARTS & DETAILED ANALYSIS
+# 5. CHARTS & DETAILED ANALYSIS (Real Monthly Net Income as Primary Tab)
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["📊 Household Wealth & Income", "💵 Real Monthly Net Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
+    ["💵 Real Monthly Net Income", "📊 Household Wealth & Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
 )
 
 with tab1:
+    st.subheader("Real Monthly Net Income (In Today's Money)")
+    st.markdown(
+        "*Expressed in today's purchasing power (discounted for inflation). Annotated with key financial milestones, target income, and state pension baseline.*"
+    )
+    fig_monthly = go.Figure()
+    fig_monthly.add_trace(
+        go.Scatter(
+            x=df_proj["Age"],
+            y=df_proj["Real Monthly Net Income (£)"],
+            name="Real Monthly Net Income",
+            line=dict(color="#17becf", width=3),
+            fill="tozeroy",
+        )
+    )
+
+    # Add Target Monthly Horizontal Line
+    fig_monthly.add_hline(
+        y=target_monthly_net_real,
+        line_dash="dot",
+        line_color="red",
+        annotation_text=f"Target Net Income (£{target_monthly_net_real:,.0f}/mo)",
+        annotation_position="bottom right",
+    )
+
+    # Add State Pension Baseline Horizontal Line
+    fig_monthly.add_hline(
+        y=state_pension_monthly_real,
+        line_dash="dot",
+        line_color="blue",
+        annotation_text=f"State Pension Baseline (£{state_pension_monthly_real:,.0f}/mo)",
+        annotation_position="bottom left",
+    )
+
+    # Add Milestone Vertical Annotations
+    fig_monthly.add_vline(
+        x=lump_sum_payoff_age,
+        line_dash="dash",
+        line_color="purple",
+        annotation_text=f"Lump Sum Payoff (Age {lump_sum_payoff_age})",
+        annotation_position="top right",
+    )
+    fig_monthly.add_vline(
+        x=retirement_age,
+        line_dash="dash",
+        line_color="green",
+        annotation_text=f"Retire (Age {retirement_age})",
+        annotation_position="top left",
+    )
+    fig_monthly.add_vline(
+        x=state_pension_age,
+        line_dash="dash",
+        line_color="blue",
+        annotation_text=f"State Pension (Age {state_pension_age})",
+        annotation_position="top left",
+    )
+    fig_monthly.add_vline(
+        x=downsizing_age,
+        line_dash="dash",
+        line_color="orange",
+        annotation_text=f"Downsize (Age {downsizing_age})",
+        annotation_position="top right",
+    )
+
+    fig_monthly.update_layout(
+        xaxis_title="User Age",
+        yaxis_title="Real Monthly Net Income (£ / month)",
+        hovermode="x unified",
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
+    st.plotly_chart(fig_monthly, use_container_width=True)
+
+with tab2:
     st.subheader("Combined Wealth: Pensions, Liquid Cash & Property")
     fig_wealth = go.Figure()
     fig_wealth.add_trace(
@@ -535,69 +602,6 @@ with tab1:
         margin=dict(l=0, r=0, t=30, b=0),
     )
     st.plotly_chart(fig_inc, use_container_width=True)
-
-with tab2:
-    st.subheader("Real Monthly Net Income (In Today's Money)")
-    st.markdown(
-        "*Expressed in today's purchasing power (discounted for inflation). Annotated with key financial milestones and target income level.*"
-    )
-    fig_monthly = go.Figure()
-    fig_monthly.add_trace(
-        go.Scatter(
-            x=df_proj["Age"],
-            y=df_proj["Real Monthly Net Income (£)"],
-            name="Real Monthly Net Income",
-            line=dict(color="#17becf", width=3),
-            fill="tozeroy",
-        )
-    )
-
-    # Add Target Monthly Horizontal Line
-    fig_monthly.add_hline(
-        y=target_monthly_net_real,
-        line_dash="dot",
-        line_color="red",
-        annotation_text=f"Target Net Income (£{target_monthly_net_real:,.0f}/mo)",
-        annotation_position="bottom right",
-    )
-
-    # Add Milestone Vertical Annotations
-    fig_monthly.add_vline(
-        x=lump_sum_payoff_age,
-        line_dash="dash",
-        line_color="purple",
-        annotation_text=f"Lump Sum Payoff (Age {lump_sum_payoff_age})",
-        annotation_position="top right",
-    )
-    fig_monthly.add_vline(
-        x=retirement_age,
-        line_dash="dash",
-        line_color="green",
-        annotation_text=f"Retire (Age {retirement_age})",
-        annotation_position="top left",
-    )
-    fig_monthly.add_vline(
-        x=state_pension_age,
-        line_dash="dash",
-        line_color="blue",
-        annotation_text=f"State Pension (Age {state_pension_age})",
-        annotation_position="top left",
-    )
-    fig_monthly.add_vline(
-        x=downsizing_age,
-        line_dash="dash",
-        line_color="orange",
-        annotation_text=f"Downsize (Age {downsizing_age})",
-        annotation_position="top right",
-    )
-
-    fig_monthly.update_layout(
-        xaxis_title="User Age",
-        yaxis_title="Real Monthly Net Income (£ / month)",
-        hovermode="x unified",
-        margin=dict(l=0, r=0, t=30, b=0),
-    )
-    st.plotly_chart(fig_monthly, use_container_width=True)
 
 with tab3:
     st.subheader("Current Salary Breakdown (User)")
