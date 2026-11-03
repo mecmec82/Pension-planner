@@ -192,6 +192,9 @@ end_age = st.sidebar.number_input(
     step=1,
 )
 
+# Target monthly income in today's terms
+target_monthly_net_real = desired_pension_income / 12
+
 # ==========================================
 # 2. TAX CALCULATIONS (UK Baseline)
 # ==========================================
@@ -238,7 +241,7 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
 er_contrib_val = gross_salary * (er_pension_pct / 100)
 
 # ==========================================
-# 3. PROJECTION LOGIC
+# 3. PROJECTION LOGIC (DYNAMIC RETIREMENT CAPPING)
 # ==========================================
 years = np.arange(current_age, end_age + 1)
 
@@ -296,6 +299,7 @@ for yr in range(current_age, end_age + 1):
     user_net_take_home = 0.0
     spouse_net_take_home = 0.0
 
+    # Accumulation
     if yr < retirement_age:
         u_net, _, _, u_ee_contrib = calculate_take_home(current_gross_salary, ee_pension_pct, other_sal_sac)
         u_er_contrib = current_gross_salary * (er_pension_pct / 100)
@@ -319,57 +323,55 @@ for yr in range(current_age, end_age + 1):
         curr_spouse_pot = curr_spouse_pot * (1 + spouse_pension_growth_rate) + total_spouse_contrib
         spouse_net_take_home = s_net
 
-    user_private_drawdown = 0.0
-    if yr >= retirement_age:
-        target_share = inflated_desired_income / 2
-        user_private_drawdown = min(curr_user_pot, target_share)
-        curr_user_pot = (curr_user_pot - user_private_drawdown) * (1 + pension_growth_rate)
-        curr_user_pot = max(0.0, curr_user_pot)
-
-    spouse_private_drawdown = 0.0
-    if curr_spouse_age >= spouse_retirement_age:
-        target_share = inflated_desired_income / 2
-        spouse_private_drawdown = min(curr_spouse_pot, target_share)
-        curr_spouse_pot = (curr_spouse_pot - spouse_private_drawdown) * (1 + spouse_pension_growth_rate)
-        curr_spouse_pot = max(0.0, curr_spouse_pot)
-
-    liquid_cash_drawdown = 0.0
-    if (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age):
-        current_pension_total = user_private_drawdown + spouse_private_drawdown
-        inflated_state_pension = state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)
-        u_state = inflated_state_pension if yr >= state_pension_age else 0.0
-        s_state = inflated_state_pension if curr_spouse_age >= state_pension_age else 0.0
-        
-        current_total = current_pension_total + u_state + s_state
-        shortfall = inflated_desired_income - current_total
-        if shortfall > 0 and curr_liquid_cash > 0:
-            liquid_cash_drawdown = min(curr_liquid_cash, shortfall)
-            curr_liquid_cash -= liquid_cash_drawdown
-
+    # Retirement Decumulation Phase
+    is_retired = (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age)
+    
     user_state_pension = (state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)) if yr >= state_pension_age else 0.0
     spouse_state_pension = (state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)) if curr_spouse_age >= state_pension_age else 0.0
+    total_state_pension = user_state_pension + spouse_state_pension
 
-    total_actual_inc = (
-        user_private_drawdown
-        + spouse_private_drawdown
-        + user_state_pension
-        + spouse_state_pension
-        + liquid_cash_drawdown
-    )
-    
-    if yr < retirement_age and curr_spouse_age < spouse_retirement_age:
+    user_private_drawdown = 0.0
+    spouse_private_drawdown = 0.0
+    liquid_cash_drawdown = 0.0
+
+    if is_retired:
+        # Net annual shortfall remaining after State Pensions
+        annual_needed = max(0.0, inflated_desired_income - total_state_pension)
+
+        # Draw from User Private Pension (if eligible)
+        if yr >= retirement_age and curr_user_pot > 0:
+            user_private_drawdown = min(curr_user_pot, annual_needed / 2 if (curr_spouse_age >= spouse_retirement_age and curr_spouse_pot > 0) else annual_needed)
+            curr_user_pot -= user_private_drawdown
+
+        # Draw from Spouse Private Pension (if eligible)
+        remaining_needed = annual_needed - user_private_drawdown
+        if curr_spouse_age >= spouse_retirement_age and curr_spouse_pot > 0 and remaining_needed > 0:
+            spouse_private_drawdown = min(curr_spouse_pot, remaining_needed)
+            curr_spouse_pot -= spouse_private_drawdown
+
+        # Draw remaining shortfall from liquid cash buffer (if any)
+        remaining_needed -= spouse_private_drawdown
+        if remaining_needed > 0 and curr_liquid_cash > 0:
+            liquid_cash_drawdown = min(curr_liquid_cash, remaining_needed)
+            curr_liquid_cash -= liquid_cash_drawdown
+
+        # Grow remaining pots post-drawdown
+        if yr >= retirement_age:
+            curr_user_pot = max(0.0, curr_user_pot * (1 + pension_growth_rate))
+        if curr_spouse_age >= spouse_retirement_age:
+            curr_spouse_pot = max(0.0, curr_spouse_pot * (1 + spouse_pension_growth_rate))
+
+        total_actual_inc = user_private_drawdown + spouse_private_drawdown + total_state_pension + liquid_cash_drawdown
+        nominal_monthly_net = total_actual_inc / 12
+    else:
         total_actual_inc = 0.0
-
-    if yr < retirement_age or curr_spouse_age < spouse_retirement_age:
         combined_annual_net = user_net_take_home + spouse_net_take_home
         annual_mortgage_outflow = annual_mortgage_payment if curr_mortgage_pot > 0 else 0.0
         net_after_payments = max(0.0, combined_annual_net - annual_mortgage_outflow)
         nominal_monthly_net = net_after_payments / 12
-    else:
-        nominal_monthly_net = total_actual_inc / 12
 
     real_monthly_net = nominal_monthly_net / ((1 + inflation_rate) ** years_from_start)
-    delta = total_actual_inc - inflated_desired_income if (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age) else -inflated_desired_income
+    delta = total_actual_inc - inflated_desired_income if is_retired else -inflated_desired_income
 
     user_pension_balances.append(curr_user_pot)
     spouse_pension_balances.append(curr_spouse_pot)
@@ -445,206 +447,3 @@ st.markdown("---")
 # 5. CHARTS & DETAILED ANALYSIS
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["📊 Household Wealth & Income", "💵 Real Monthly Net Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
-)
-
-with tab1:
-    st.subheader("Combined Wealth: Pensions, Liquid Cash & Property")
-    fig_wealth = go.Figure()
-    fig_wealth.add_trace(
-        go.Scatter(
-            x=df_proj["Age"],
-            y=df_proj["Combined Pension Pot (£)"],
-            name="Combined Pension Pots",
-            line=dict(color="#1f77b4", width=3),
-        )
-    )
-    fig_wealth.add_trace(
-        go.Scatter(
-            x=df_proj["Age"],
-            y=df_proj["Liquid Cash (£)"],
-            name="Liquid Cash (Downsizing)",
-            line=dict(color="#2ca02c", width=2, dash="dot"),
-        )
-    )
-    fig_wealth.add_trace(
-        go.Scatter(
-            x=df_proj["Age"],
-            y=df_proj["Property Value (£)"],
-            name="Property Value",
-            line=dict(color="#9467bd", width=2),
-        )
-    )
-    fig_wealth.add_trace(
-        go.Scatter(
-            x=df_proj["Age"],
-            y=df_proj["Mortgage Balance (£)"],
-            name="Mortgage Balance",
-            line=dict(color="#d62728", width=2, dash="dash"),
-        )
-    )
-    if lump_sum_paid_at_57 > 0:
-        fig_wealth.add_vline(
-            x=57,
-            line_dash="dot",
-            line_color="purple",
-            annotation_text="Mortgage Cleared (Age 57)",
-            annotation_position="top left",
-        )
-    fig_wealth.add_vline(
-        x=downsizing_age,
-        line_dash="dot",
-        line_color="green",
-        annotation_text=f"Downsize (Age {downsizing_age})",
-        annotation_position="top right",
-    )
-    fig_wealth.update_layout(
-        xaxis_title="User Age",
-        yaxis_title="Amount (£)",
-        hovermode="x unified",
-        margin=dict(l=0, r=0, t=30, b=0),
-    )
-    st.plotly_chart(fig_wealth, use_container_width=True)
-
-    st.subheader("Retirement Income: Desired vs. Actual")
-    df_retire = df_proj[df_proj["Age"] >= retirement_age]
-    fig_inc = go.Figure()
-    fig_inc.add_trace(
-        go.Bar(
-            x=df_retire["Age"],
-            y=df_retire["Projected Actual Income (£)"],
-            name="Projected Actual Household Income",
-            marker_color="#2ca02c",
-        )
-    )
-    fig_inc.add_trace(
-        go.Scatter(
-            x=df_retire["Age"],
-            y=df_retire["Desired Annual Income (£)"],
-            name="Desired Target Income",
-            line=dict(color="#ff7f0e", width=2, dash="dash"),
-        )
-    )
-    fig_inc.update_layout(
-        barmode="overlay",
-        xaxis_title="User Age",
-        yaxis_title="Annual Income (£)",
-        hovermode="x unified",
-        margin=dict(l=0, r=0, t=30, b=0),
-    )
-    st.plotly_chart(fig_inc, use_container_width=True)
-
-with tab2:
-    st.subheader("Real Monthly Net Income (In Today's Money)")
-    st.markdown(
-        "*Expressed in today's purchasing power (discounted for inflation). Annotated with key financial milestones.*"
-    )
-    fig_monthly = go.Figure()
-    fig_monthly.add_trace(
-        go.Scatter(
-            x=df_proj["Age"],
-            y=df_proj["Real Monthly Net Income (£)"],
-            name="Real Monthly Net Income",
-            line=dict(color="#17becf", width=3),
-            fill="tozeroy",
-        )
-    )
-
-    # Add milestone annotations
-    fig_monthly.add_vline(
-        x=lump_sum_payoff_age,
-        line_dash="dash",
-        line_color="purple",
-        annotation_text=f"Lump Sum Payoff (Age {lump_sum_payoff_age})",
-        annotation_position="top right",
-    )
-    fig_monthly.add_vline(
-        x=retirement_age,
-        line_dash="dash",
-        line_color="green",
-        annotation_text=f"Retire (Age {retirement_age})",
-        annotation_position="top left",
-    )
-    fig_monthly.add_vline(
-        x=state_pension_age,
-        line_dash="dash",
-        line_color="blue",
-        annotation_text=f"State Pension (Age {state_pension_age})",
-        annotation_position="top left",
-    )
-    fig_monthly.add_vline(
-        x=downsizing_age,
-        line_dash="dash",
-        line_color="orange",
-        annotation_text=f"Downsize (Age {downsizing_age})",
-        annotation_position="top right",
-    )
-
-    fig_monthly.update_layout(
-        xaxis_title="User Age",
-        yaxis_title="Real Monthly Net Income (£ / month)",
-        hovermode="x unified",
-        margin=dict(l=0, r=0, t=30, b=0),
-    )
-    st.plotly_chart(fig_monthly, use_container_width=True)
-
-with tab3:
-    st.subheader("Current Salary Breakdown (User)")
-    breakdown_data = {
-        "Component": [
-            "Net Take-Home Pay",
-            "Income Tax",
-            "National Insurance",
-            "Employee Pension",
-            "Other Salary Sacrifice",
-        ],
-        "Amount (£)": [
-            net_take_home,
-            tax_paid,
-            ni_paid,
-            ee_contrib_val,
-            other_sal_sac,
-        ],
-    }
-    df_breakdown = pd.DataFrame(breakdown_data)
-
-    col_t1, col_t2 = st.columns([1, 1])
-    with col_t1:
-        fig_pie = px.pie(
-            df_breakdown,
-            values="Amount (£)",
-            names="Component",
-            color_discrete_sequence=px.colors.qualitative.Pastel,
-            hole=0.4,
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    with col_t2:
-        st.markdown("### Total Annual Package Summary")
-        st.write(f"**Gross Salary:** £{gross_salary:,.2f}")
-        st.write(f"**Employer Pension Contribution:** £{er_contrib_val:,.2f} / yr")
-        st.write(f"**Spouse Gross Salary:** £{spouse_gross_salary:,.2f} / yr")
-        st.dataframe(
-            df_breakdown.style.format({"Amount (£)": "£{:,.2f}"}),
-            use_container_width=True,
-        )
-
-with tab4:
-    st.subheader("Projection Master Table")
-    st.dataframe(
-        df_proj.style.format(
-            {
-                "User Pension (£)": "£{:,.0f}",
-                "Spouse Pension (£)": "£{:,.0f}",
-                "Combined Pension Pot (£)": "£{:,.0f}",
-                "Liquid Cash (£)": "£{:,.0f}",
-                "Property Value (£)": "£{:,.0f}",
-                "Mortgage Balance (£)": "£{:,.0f}",
-                "Desired Annual Income (£)": "£{:,.0f}",
-                "Projected Actual Income (£)": "£{:,.0f}",
-                "Real Monthly Net Income (£)": "£{:,.0f}",
-                "Income Delta (£)": "£{:,.0f}",
-            }
-        ),
-        use_container_width=True,
-    )
