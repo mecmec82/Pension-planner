@@ -32,7 +32,8 @@ DEFAULT_CONFIG = {
     "spouse_retirement_age": 60,
     "spouse_current_pension": 100000.0,
     "spouse_gross_salary": 40000.0,
-    "spouse_pension_pct": 6.0,
+    "spouse_ee_pension_pct": 4.0,
+    "spouse_er_pension_pct": 5.0,
     "spouse_pension_growth_rate": 6.0,
     "state_pension_age": 67,
     "state_pension_annual_amount": 12548.0,
@@ -102,8 +103,11 @@ spouse_current_pension = st.sidebar.number_input(
 spouse_gross_salary = st.sidebar.number_input(
     "Spouse Annual Gross Salary (£)", min_value=0.0, value=float(config["spouse_gross_salary"]), step=1000.0
 )
-spouse_pension_pct = st.sidebar.slider(
-    "Spouse Pension Contribution (%)", 0.0, 50.0, float(config["spouse_pension_pct"]), step=0.5
+spouse_ee_pension_pct = st.sidebar.slider(
+    "Spouse Employee Pension Contribution (%)", 0.0, 50.0, float(config["spouse_ee_pension_pct"]), step=0.5
+)
+spouse_er_pension_pct = st.sidebar.slider(
+    "Spouse Employer Pension Contribution (%)", 0.0, 30.0, float(config["spouse_er_pension_pct"]), step=0.5
 )
 spouse_pension_growth_rate = (
     st.sidebar.slider(
@@ -240,6 +244,15 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
 ) = calculate_take_home(gross_salary, ee_pension_pct, other_sal_sac)
 er_contrib_val = gross_salary * (er_pension_pct / 100)
 
+# Baseline spouse metrics for display
+(
+    spouse_net_take_home_base,
+    _,
+    _,
+    spouse_ee_contrib_val_base,
+) = calculate_take_home(spouse_gross_salary, spouse_ee_pension_pct, 0.0)
+spouse_er_contrib_val_base = spouse_gross_salary * (spouse_er_pension_pct / 100)
+
 # ==========================================
 # 3. PROJECTION LOGIC
 # ==========================================
@@ -317,8 +330,9 @@ for yr in range(current_age, end_age + 1):
                 curr_mortgage_pot = max(0.0, curr_mortgage_pot - principal_paid)
 
     if curr_spouse_age < spouse_retirement_age:
-        s_net, _, _, s_ee_contrib = calculate_take_home(current_spouse_salary, spouse_pension_pct, 0.0)
-        total_spouse_contrib = s_ee_contrib
+        s_net, _, _, s_ee_contrib = calculate_take_home(current_spouse_salary, spouse_ee_pension_pct, 0.0)
+        s_er_contrib = current_spouse_salary * (spouse_er_pension_pct / 100)
+        total_spouse_contrib = s_ee_contrib + s_er_contrib
 
         curr_spouse_pot = curr_spouse_pot * (1 + spouse_pension_growth_rate) + total_spouse_contrib
         spouse_net_take_home = s_net
@@ -439,7 +453,7 @@ with col_m4:
 st.markdown("---")
 
 # ==========================================
-# 5. CHARTS & DETAILED ANALYSIS (Real Monthly Net Income as Primary Tab)
+# 5. CHARTS & DETAILED ANALYSIS
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(
     ["💵 Real Monthly Net Income", "📊 Household Wealth & Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
@@ -639,6 +653,8 @@ with tab3:
         st.write(f"**Gross Salary:** £{gross_salary:,.2f}")
         st.write(f"**Employer Pension Contribution:** £{er_contrib_val:,.2f} / yr")
         st.write(f"**Spouse Gross Salary:** £{spouse_gross_salary:,.2f} / yr")
+        st.write(f"**Spouse Employee Pension (4%):** £{spouse_ee_contrib_val_base:,.2f} / yr")
+        st.write(f"**Spouse Employer Pension (5%):** £{spouse_er_contrib_val_base:,.2f} / yr")
         st.dataframe(
             df_breakdown.style.format({"Amount (£)": "£{:,.2f}"}),
             use_container_width=True,
