@@ -238,7 +238,7 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
 er_contrib_val = gross_salary * (er_pension_pct / 100)
 
 # ==========================================
-# 3. PROJECTION LOGIC (REAL TERMS MONTHLY INCOME)
+# 3. PROJECTION LOGIC
 # ==========================================
 years = np.arange(current_age, end_age + 1)
 
@@ -360,7 +360,6 @@ for yr in range(current_age, end_age + 1):
     if yr < retirement_age and curr_spouse_age < spouse_retirement_age:
         total_actual_inc = 0.0
 
-    # Calculate nominal monthly net income
     if yr < retirement_age or curr_spouse_age < spouse_retirement_age:
         combined_annual_net = user_net_take_home + spouse_net_take_home
         annual_mortgage_outflow = annual_mortgage_payment if curr_mortgage_pot > 0 else 0.0
@@ -369,9 +368,7 @@ for yr in range(current_age, end_age + 1):
     else:
         nominal_monthly_net = total_actual_inc / 12
 
-    # Deflate to Real Terms (Today's Money)
     real_monthly_net = nominal_monthly_net / ((1 + inflation_rate) ** years_from_start)
-
     delta = total_actual_inc - inflated_desired_income if (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age) else -inflated_desired_income
 
     user_pension_balances.append(curr_user_pot)
@@ -540,7 +537,7 @@ with tab1:
 with tab2:
     st.subheader("Real Monthly Net Income (In Today's Money)")
     st.markdown(
-        "*Expressed in today's purchasing power (discounted for inflation). During working years: Net take-home minus mortgage payments. During retirement: Pension & state pension drawdowns.*"
+        "*Expressed in today's purchasing power (discounted for inflation). Annotated with key financial milestones.*"
     )
     fig_monthly = go.Figure()
     fig_monthly.add_trace(
@@ -552,6 +549,37 @@ with tab2:
             fill="tozeroy",
         )
     )
+
+    # Add milestone annotations
+    fig_monthly.add_vline(
+        x=lump_sum_payoff_age,
+        line_dash="dash",
+        line_color="purple",
+        annotation_text=f"Lump Sum Payoff (Age {lump_sum_payoff_age})",
+        annotation_position="top right",
+    )
+    fig_monthly.add_vline(
+        x=retirement_age,
+        line_dash="dash",
+        line_color="green",
+        annotation_text=f"Retire (Age {retirement_age})",
+        annotation_position="top left",
+    )
+    fig_monthly.add_vline(
+        x=state_pension_age,
+        line_dash="dash",
+        line_color="blue",
+        annotation_text=f"State Pension (Age {state_pension_age})",
+        annotation_position="top left",
+    )
+    fig_monthly.add_vline(
+        x=downsizing_age,
+        line_dash="dash",
+        line_color="orange",
+        annotation_text=f"Downsize (Age {downsizing_age})",
+        annotation_position="top right",
+    )
+
     fig_monthly.update_layout(
         xaxis_title="User Age",
         yaxis_title="Real Monthly Net Income (£ / month)",
