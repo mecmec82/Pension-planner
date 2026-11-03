@@ -447,3 +447,215 @@ st.markdown("---")
 # 5. CHARTS & DETAILED ANALYSIS
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(
+    ["📊 Household Wealth & Income", "💵 Real Monthly Net Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
+)
+
+with tab1:
+    st.subheader("Combined Wealth: Pensions, Liquid Cash & Property")
+    fig_wealth = go.Figure()
+    fig_wealth.add_trace(
+        go.Scatter(
+            x=df_proj["Age"],
+            y=df_proj["Combined Pension Pot (£)"],
+            name="Combined Pension Pots",
+            line=dict(color="#1f77b4", width=3),
+        )
+    )
+    fig_wealth.add_trace(
+        go.Scatter(
+            x=df_proj["Age"],
+            y=df_proj["Liquid Cash (£)"],
+            name="Liquid Cash (Downsizing)",
+            line=dict(color="#2ca02c", width=2, dash="dot"),
+        )
+    )
+    fig_wealth.add_trace(
+        go.Scatter(
+            x=df_proj["Age"],
+            y=df_proj["Property Value (£)"],
+            name="Property Value",
+            line=dict(color="#9467bd", width=2),
+        )
+    )
+    fig_wealth.add_trace(
+        go.Scatter(
+            x=df_proj["Age"],
+            y=df_proj["Mortgage Balance (£)"],
+            name="Mortgage Balance",
+            line=dict(color="#d62728", width=2, dash="dash"),
+        )
+    )
+    if lump_sum_paid_at_57 > 0:
+        fig_wealth.add_vline(
+            x=57,
+            line_dash="dot",
+            line_color="purple",
+            annotation_text="Mortgage Cleared (Age 57)",
+            annotation_position="top left",
+        )
+    fig_wealth.add_vline(
+        x=downsizing_age,
+        line_dash="dot",
+        line_color="green",
+        annotation_text=f"Downsize (Age {downsizing_age})",
+        annotation_position="top right",
+    )
+    fig_wealth.update_layout(
+        xaxis_title="User Age",
+        yaxis_title="Amount (£)",
+        hovermode="x unified",
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
+    st.plotly_chart(fig_wealth, use_container_width=True)
+
+    st.subheader("Retirement Income: Desired vs. Actual")
+    df_retire = df_proj[df_proj["Age"] >= retirement_age]
+    fig_inc = go.Figure()
+    fig_inc.add_trace(
+        go.Bar(
+            x=df_retire["Age"],
+            y=df_retire["Projected Actual Income (£)"],
+            name="Projected Actual Household Income",
+            marker_color="#2ca02c",
+        )
+    )
+    fig_inc.add_trace(
+        go.Scatter(
+            x=df_retire["Age"],
+            y=df_retire["Desired Annual Income (£)"],
+            name="Desired Target Income",
+            line=dict(color="#ff7f0e", width=2, dash="dash"),
+        )
+    )
+    fig_inc.update_layout(
+        barmode="overlay",
+        xaxis_title="User Age",
+        yaxis_title="Annual Income (£)",
+        hovermode="x unified",
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
+    st.plotly_chart(fig_inc, use_container_width=True)
+
+with tab2:
+    st.subheader("Real Monthly Net Income (In Today's Money)")
+    st.markdown(
+        "*Expressed in today's purchasing power (discounted for inflation). Annotated with key financial milestones and target income level.*"
+    )
+    fig_monthly = go.Figure()
+    fig_monthly.add_trace(
+        go.Scatter(
+            x=df_proj["Age"],
+            y=df_proj["Real Monthly Net Income (£)"],
+            name="Real Monthly Net Income",
+            line=dict(color="#17becf", width=3),
+            fill="tozeroy",
+        )
+    )
+
+    # Add Target Monthly Horizontal Line
+    fig_monthly.add_hline(
+        y=target_monthly_net_real,
+        line_dash="dot",
+        line_color="red",
+        annotation_text=f"Target Net Income (£{target_monthly_net_real:,.0f}/mo)",
+        annotation_position="bottom right",
+    )
+
+    # Add Milestone Vertical Annotations
+    fig_monthly.add_vline(
+        x=lump_sum_payoff_age,
+        line_dash="dash",
+        line_color="purple",
+        annotation_text=f"Lump Sum Payoff (Age {lump_sum_payoff_age})",
+        annotation_position="top right",
+    )
+    fig_monthly.add_vline(
+        x=retirement_age,
+        line_dash="dash",
+        line_color="green",
+        annotation_text=f"Retire (Age {retirement_age})",
+        annotation_position="top left",
+    )
+    fig_monthly.add_vline(
+        x=state_pension_age,
+        line_dash="dash",
+        line_color="blue",
+        annotation_text=f"State Pension (Age {state_pension_age})",
+        annotation_position="top left",
+    )
+    fig_monthly.add_vline(
+        x=downsizing_age,
+        line_dash="dash",
+        line_color="orange",
+        annotation_text=f"Downsize (Age {downsizing_age})",
+        annotation_position="top right",
+    )
+
+    fig_monthly.update_layout(
+        xaxis_title="User Age",
+        yaxis_title="Real Monthly Net Income (£ / month)",
+        hovermode="x unified",
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
+    st.plotly_chart(fig_monthly, use_container_width=True)
+
+with tab3:
+    st.subheader("Current Salary Breakdown (User)")
+    breakdown_data = {
+        "Component": [
+            "Net Take-Home Pay",
+            "Income Tax",
+            "National Insurance",
+            "Employee Pension",
+            "Other Salary Sacrifice",
+        ],
+        "Amount (£)": [
+            net_take_home,
+            tax_paid,
+            ni_paid,
+            ee_contrib_val,
+            other_sal_sac,
+        ],
+    }
+    df_breakdown = pd.DataFrame(breakdown_data)
+
+    col_t1, col_t2 = st.columns([1, 1])
+    with col_t1:
+        fig_pie = px.pie(
+            df_breakdown,
+            values="Amount (£)",
+            names="Component",
+            color_discrete_sequence=px.colors.qualitative.Pastel,
+            hole=0.4,
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col_t2:
+        st.markdown("### Total Annual Package Summary")
+        st.write(f"**Gross Salary:** £{gross_salary:,.2f}")
+        st.write(f"**Employer Pension Contribution:** £{er_contrib_val:,.2f} / yr")
+        st.write(f"**Spouse Gross Salary:** £{spouse_gross_salary:,.2f} / yr")
+        st.dataframe(
+            df_breakdown.style.format({"Amount (£)": "£{:,.2f}"}),
+            use_container_width=True,
+        )
+
+with tab4:
+    st.subheader("Projection Master Table")
+    st.dataframe(
+        df_proj.style.format(
+            {
+                "User Pension (£)": "£{:,.0f}",
+                "Spouse Pension (£)": "£{:,.0f}",
+                "Combined Pension Pot (£)": "£{:,.0f}",
+                "Liquid Cash (£)": "£{:,.0f}",
+                "Property Value (£)": "£{:,.0f}",
+                "Mortgage Balance (£)": "£{:,.0f}",
+                "Desired Annual Income (£)": "£{:,.0f}",
+                "Projected Actual Income (£)": "£{:,.0f}",
+                "Real Monthly Net Income (£)": "£{:,.0f}",
+                "Income Delta (£)": "£{:,.0f}",
+            }
+        ),
+        use_container_width=True,
+    )
