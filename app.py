@@ -244,7 +244,6 @@ def calculate_take_home(salary, ee_pen_pct, sal_sac):
 ) = calculate_take_home(gross_salary, ee_pension_pct, other_sal_sac)
 er_contrib_val = gross_salary * (er_pension_pct / 100)
 
-# Baseline spouse metrics for display
 (
     spouse_net_take_home_base,
     _,
@@ -254,7 +253,7 @@ er_contrib_val = gross_salary * (er_pension_pct / 100)
 spouse_er_contrib_val_base = spouse_gross_salary * (spouse_er_pension_pct / 100)
 
 # ==========================================
-# 3. PROJECTION LOGIC
+# 3. PROJECTION LOGIC (CLEAN DECUMULATION UNIFIED LOOP)
 # ==========================================
 years = np.arange(current_age, end_age + 1)
 
@@ -312,7 +311,7 @@ for yr in range(current_age, end_age + 1):
     user_net_take_home = 0.0
     spouse_net_take_home = 0.0
 
-    # Accumulation
+    # 1. ACCUMULATION (Working years for each individual)
     if yr < retirement_age:
         u_net, _, _, u_ee_contrib = calculate_take_home(current_gross_salary, ee_pension_pct, other_sal_sac)
         u_er_contrib = current_gross_salary * (er_pension_pct / 100)
@@ -337,40 +336,62 @@ for yr in range(current_age, end_age + 1):
         curr_spouse_pot = curr_spouse_pot * (1 + spouse_pension_growth_rate) + total_spouse_contrib
         spouse_net_take_home = s_net
 
-    # Retirement Decumulation Phase
+    # 2. DECUMULATION & INCOME DETERMINATION
     is_retired = (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age)
     
     user_state_pension = (state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)) if yr >= state_pension_age else 0.0
     spouse_state_pension = (state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)) if curr_spouse_age >= state_pension_age else 0.0
     total_state_pension = user_state_pension + spouse_state_pension
 
-    user_private_drawdown = 0.0
-    spouse_private_drawdown = 0.0
-    liquid_cash_drawdown = 0.0
-
     if is_retired:
-        annual_needed = max(0.0, inflated_desired_income - total_state_pension)
+        # Calculate target shortfall remaining after State Pensions
+        annual_shortfall = max(0.0, inflated_desired_income - total_state_pension)
 
-        if yr >= retirement_age and curr_user_pot > 0:
-            user_private_drawdown = min(curr_user_pot, annual_needed / 2 if (curr_spouse_age >= spouse_retirement_age and curr_spouse_pot > 0) else annual_needed)
-            curr_user_pot -= user_private_drawdown
+        user_drawdown = 0.0
+        spouse_drawdown = 0.0
+        liquid_drawdown = 0.0
 
-        remaining_needed = annual_needed - user_private_drawdown
-        if curr_spouse_age >= spouse_retirement_age and curr_spouse_pot > 0 and remaining_needed > 0:
-            spouse_private_drawdown = min(curr_spouse_pot, remaining_needed)
-            curr_spouse_pot -= spouse_private_drawdown
+        # Primary private drawdown pass: proportional draw if both retired, or single draw
+        if yr >= retirement_age and curr_spouse_age >= spouse_retirement_age:
+            # Draw up to half shortfall from each pot if available
+            target_each = annual_shortfall / 2
+            user_drawdown = min(curr_user_pot, target_each)
+            spouse_drawdown = min(curr_spouse_pot, target_each)
+            
+            rem_needed = annual_shortfall - (user_drawdown + spouse_drawdown)
+            if rem_needed > 0:
+                # Fill remaining shortfall from whichever pot still has funds
+                extra_u = min(curr_user_pot - user_drawdown, rem_needed)
+                user_drawdown += extra_u
+                rem_needed -= extra_u
+            if rem_needed > 0:
+                extra_s = min(curr_spouse_pot - spouse_drawdown, rem_needed)
+                spouse_drawdown += extra_s
+                rem_needed -= extra_s
+            if rem_needed > 0 and curr_liquid_cash > 0:
+                liquid_drawdown = min(curr_liquid_cash, rem_needed)
+        elif yr >= retirement_age:
+            user_drawdown = min(curr_user_pot, annual_shortfall)
+            rem_needed = annual_shortfall - user_drawdown
+            if rem_needed > 0 and curr_liquid_cash > 0:
+                liquid_drawdown = min(curr_liquid_cash, rem_needed)
+        elif curr_spouse_age >= spouse_retirement_age:
+            spouse_drawdown = min(curr_spouse_pot, annual_shortfall)
+            rem_needed = annual_shortfall - spouse_drawdown
+            if rem_needed > 0 and curr_liquid_cash > 0:
+                liquid_drawdown = min(curr_liquid_cash, rem_needed)
 
-        remaining_needed -= spouse_private_drawdown
-        if remaining_needed > 0 and curr_liquid_cash > 0:
-            liquid_cash_drawdown = min(curr_liquid_cash, remaining_needed)
-            curr_liquid_cash -= liquid_cash_drawdown
+        # Apply drawdowns and grow remaining pots
+        curr_user_pot -= user_drawdown
+        curr_spouse_pot -= spouse_drawdown
+        curr_liquid_cash -= liquid_drawdown
 
         if yr >= retirement_age:
             curr_user_pot = max(0.0, curr_user_pot * (1 + pension_growth_rate))
         if curr_spouse_age >= spouse_retirement_age:
             curr_spouse_pot = max(0.0, curr_spouse_pot * (1 + spouse_pension_growth_rate))
 
-        total_actual_inc = user_private_drawdown + spouse_private_drawdown + total_state_pension + liquid_cash_drawdown
+        total_actual_inc = user_drawdown + spouse_drawdown + total_state_pension + liquid_drawdown
         nominal_monthly_net = total_actual_inc / 12
     else:
         total_actual_inc = 0.0
@@ -475,7 +496,6 @@ with tab1:
         )
     )
 
-    # Add Target Monthly Horizontal Line
     fig_monthly.add_hline(
         y=target_monthly_net_real,
         line_dash="dot",
@@ -484,7 +504,6 @@ with tab1:
         annotation_position="bottom right",
     )
 
-    # Add State Pension Baseline Horizontal Line
     fig_monthly.add_hline(
         y=state_pension_monthly_real,
         line_dash="dot",
@@ -493,7 +512,6 @@ with tab1:
         annotation_position="bottom left",
     )
 
-    # Add Milestone Vertical Annotations
     fig_monthly.add_vline(
         x=lump_sum_payoff_age,
         line_dash="dash",
