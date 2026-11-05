@@ -253,7 +253,7 @@ er_contrib_val = gross_salary * (er_pension_pct / 100)
 spouse_er_contrib_val_base = spouse_gross_salary * (spouse_er_pension_pct / 100)
 
 # ==========================================
-# 3. PROJECTION LOGIC (CLEAN DECUMULATION UNIFIED LOOP)
+# 3. DETERMINISTIC PROJECTION LOGIC
 # ==========================================
 years = np.arange(current_age, end_age + 1)
 
@@ -311,7 +311,7 @@ for yr in range(current_age, end_age + 1):
     user_net_take_home = 0.0
     spouse_net_take_home = 0.0
 
-    # 1. ACCUMULATION (Working years for each individual)
+    # Accumulation
     if yr < retirement_age:
         u_net, _, _, u_ee_contrib = calculate_take_home(current_gross_salary, ee_pension_pct, other_sal_sac)
         u_er_contrib = current_gross_salary * (er_pension_pct / 100)
@@ -336,7 +336,7 @@ for yr in range(current_age, end_age + 1):
         curr_spouse_pot = curr_spouse_pot * (1 + spouse_pension_growth_rate) + total_spouse_contrib
         spouse_net_take_home = s_net
 
-    # 2. DECUMULATION & INCOME DETERMINATION
+    # Decumulation
     is_retired = (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age)
     
     user_state_pension = (state_pension_annual_amount * ((1 + inflation_rate) ** years_from_start)) if yr >= state_pension_age else 0.0
@@ -344,23 +344,19 @@ for yr in range(current_age, end_age + 1):
     total_state_pension = user_state_pension + spouse_state_pension
 
     if is_retired:
-        # Calculate target shortfall remaining after State Pensions
         annual_shortfall = max(0.0, inflated_desired_income - total_state_pension)
 
         user_drawdown = 0.0
         spouse_drawdown = 0.0
         liquid_drawdown = 0.0
 
-        # Primary private drawdown pass: proportional draw if both retired, or single draw
         if yr >= retirement_age and curr_spouse_age >= spouse_retirement_age:
-            # Draw up to half shortfall from each pot if available
             target_each = annual_shortfall / 2
             user_drawdown = min(curr_user_pot, target_each)
             spouse_drawdown = min(curr_spouse_pot, target_each)
             
             rem_needed = annual_shortfall - (user_drawdown + spouse_drawdown)
             if rem_needed > 0:
-                # Fill remaining shortfall from whichever pot still has funds
                 extra_u = min(curr_user_pot - user_drawdown, rem_needed)
                 user_drawdown += extra_u
                 rem_needed -= extra_u
@@ -381,7 +377,6 @@ for yr in range(current_age, end_age + 1):
             if rem_needed > 0 and curr_liquid_cash > 0:
                 liquid_drawdown = min(curr_liquid_cash, rem_needed)
 
-        # Apply drawdowns and grow remaining pots
         curr_user_pot -= user_drawdown
         curr_spouse_pot -= spouse_drawdown
         curr_liquid_cash -= liquid_drawdown
@@ -431,7 +426,151 @@ df_proj = pd.DataFrame(
 )
 
 # ==========================================
-# 4. DASHBOARD DISPLAY & METRICS
+# 4. MONTE CARLO SIMULATION LOGIC
+# ==========================================
+# Historical parameters (Median +/- 2 Stdevs)
+STOCK_MEDIAN = 0.105
+STOCK_STDEV = 0.175
+INFLATION_MEDIAN = 0.027
+INFLATION_STDEV = 0.048
+
+def run_monte_carlo(num_sims=1000):
+    np.random.seed(42)  # Reproducible stochastic runs
+    n_years = len(years)
+
+    # Truncate normal distribution at +/- 2 Stdevs
+    stock_returns = np.random.normal(STOCK_MEDIAN, STOCK_STDEV, (num_sims, n_years))
+    stock_returns = np.clip(stock_returns, STOCK_MEDIAN - 2 * STOCK_STDEV, STOCK_MEDIAN + 2 * STOCK_STDEV)
+
+    inflation_rates = np.random.normal(INFLATION_MEDIAN, INFLATION_STDEV, (num_sims, n_years))
+    inflation_rates = np.clip(inflation_rates, INFLATION_MEDIAN - 2 * INFLATION_STDEV, INFLATION_MEDIAN + 2 * INFLATION_STDEV)
+
+    sim_combined_pots = np.zeros((num_sims, n_years))
+    success_count = 0
+
+    for i in range(num_sims):
+        mc_user_pot = current_pension
+        mc_spouse_pot = spouse_current_pension
+        mc_liquid_cash = 0.0
+        mc_property_val = initial_property_value
+        mc_mortgage_pot = mortgage_balance
+        cum_inflation = 1.0
+
+        is_successful = True
+
+        for idx, yr in enumerate(years):
+            r_stock = stock_returns[i, idx]
+            r_inf = inflation_rates[i, idx]
+            cum_inflation *= (1 + r_inf)
+
+            curr_spouse_age = spouse_age_offset + yr
+            mc_desired_inc = desired_pension_income * cum_inflation
+            mc_gross_sal = gross_salary * cum_inflation
+            mc_spouse_sal = spouse_gross_salary * cum_inflation
+
+            if yr > current_age:
+                mc_property_val *= (1 + r_inf)
+
+            # Age 57 Mortgage Payoff
+            if yr == lump_sum_payoff_age:
+                if mc_mortgage_pot > 0:
+                    lump_payoff = min(mc_mortgage_pot, mc_user_pot)
+                    mc_user_pot -= lump_payoff
+                    mc_mortgage_pot = max(0.0, mc_mortgage_pot - lump_payoff)
+
+            # Downsizing
+            if yr == downsizing_age:
+                eq = max(0.0, mc_property_val - mc_mortgage_pot)
+                rel = eq * (equity_release_pct / 100)
+                mc_liquid_cash += rel
+                mc_property_val -= rel
+                mc_mortgage_pot = max(0.0, mc_mortgage_pot * (1 - (equity_release_pct / 100)))
+
+            # Accumulation
+            if yr < retirement_age:
+                u_net, _, _, u_ee = calculate_take_home(mc_gross_sal, ee_pension_pct, other_sal_sac)
+                u_er = mc_gross_sal * (er_pension_pct / 100)
+                mc_user_pot = mc_user_pot * (1 + r_stock) + (u_ee + u_er)
+
+                if mc_mortgage_pot > 0 and yr != lump_sum_payoff_age:
+                    int_amt = mc_mortgage_pot * mortgage_rate
+                    pr_amt = min(mc_mortgage_pot, annual_mortgage_payment - int_amt)
+                    if pr_amt < 0:
+                        mc_mortgage_pot += int_amt - annual_mortgage_payment
+                    else:
+                        mc_mortgage_pot = max(0.0, mc_mortgage_pot - pr_amt)
+
+            if curr_spouse_age < spouse_retirement_age:
+                s_net, _, _, s_ee = calculate_take_home(mc_spouse_sal, spouse_ee_pension_pct, 0.0)
+                s_er = mc_spouse_sal * (spouse_er_pension_pct / 100)
+                mc_spouse_pot = mc_spouse_pot * (1 + r_stock) + (s_ee + s_er)
+
+            # Decumulation
+            is_ret = (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age)
+            u_st = (state_pension_annual_amount * cum_inflation) if yr >= state_pension_age else 0.0
+            s_st = (state_pension_annual_amount * cum_inflation) if curr_spouse_age >= state_pension_age else 0.0
+            tot_st = u_st + s_st
+
+            if is_ret:
+                shortfall = max(0.0, mc_desired_inc - tot_st)
+                u_draw = 0.0
+                s_draw = 0.0
+                l_draw = 0.0
+
+                if yr >= retirement_age and curr_spouse_age >= spouse_retirement_age:
+                    t_each = shortfall / 2
+                    u_draw = min(mc_user_pot, t_each)
+                    s_draw = min(mc_spouse_pot, t_each)
+                    rem = shortfall - (u_draw + s_draw)
+                    if rem > 0:
+                        ex_u = min(mc_user_pot - u_draw, rem)
+                        u_draw += ex_u
+                        rem -= ex_u
+                    if rem > 0:
+                        ex_s = min(mc_spouse_pot - s_draw, rem)
+                        s_draw += ex_s
+                        rem -= ex_s
+                    if rem > 0 and mc_liquid_cash > 0:
+                        l_draw = min(mc_liquid_cash, rem)
+                elif yr >= retirement_age:
+                    u_draw = min(mc_user_pot, shortfall)
+                    rem = shortfall - u_draw
+                    if rem > 0 and mc_liquid_cash > 0:
+                        l_draw = min(mc_liquid_cash, rem)
+                elif curr_spouse_age >= spouse_retirement_age:
+                    s_draw = min(mc_spouse_pot, shortfall)
+                    rem = shortfall - s_draw
+                    if rem > 0 and mc_liquid_cash > 0:
+                        l_draw = min(mc_liquid_cash, rem)
+
+                mc_user_pot -= u_draw
+                mc_spouse_pot -= s_draw
+                mc_liquid_cash -= l_draw
+
+                if yr >= retirement_age:
+                    mc_user_pot = max(0.0, mc_user_pot * (1 + r_stock))
+                if curr_spouse_age >= spouse_retirement_age:
+                    mc_spouse_pot = max(0.0, mc_spouse_pot * (1 + r_stock))
+
+                if (mc_user_pot + mc_spouse_pot + mc_liquid_cash) <= 0 and yr < end_age:
+                    is_successful = False
+
+            sim_combined_pots[i, idx] = mc_user_pot + mc_spouse_pot + mc_liquid_cash
+
+        if is_successful:
+            success_count += 1
+
+    success_rate = (success_count / num_sims) * 100
+    p10 = np.percentile(sim_combined_pots, 10, axis=0)
+    p50 = np.percentile(sim_combined_pots, 50, axis=0)
+    p90 = np.percentile(sim_combined_pots, 90, axis=0)
+
+    return p10, p50, p90, success_rate
+
+p10_pots, p50_pots, p90_pots, mc_success_rate = run_monte_carlo(1000)
+
+# ==========================================
+# 5. DASHBOARD DISPLAY & METRICS
 # ==========================================
 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 
@@ -459,25 +598,25 @@ with col_m3:
     )
 
 with col_m4:
-    depletion_rows = df_proj[
-        (df_proj["Age"] >= retirement_age)
-        & (df_proj["Combined Pension Pot (£)"] <= 0)
-        & (df_proj["Liquid Cash (£)"] <= 0)
-    ]
-    runout_age = (
-        f"Age {depletion_rows['Age'].iloc[0]}"
-        if not depletion_rows.empty
-        else "Sustainable"
+    st.metric(
+        label="Monte Carlo Success Rate",
+        value=f"{mc_success_rate:.1f}%",
+        help="1,000 simulations using 50-yr median +/- 2 stdev market & inflation distributions",
     )
-    st.metric(label="Depletion / Shortfall Age", value=runout_age)
 
 st.markdown("---")
 
 # ==========================================
-# 5. CHARTS & DETAILED ANALYSIS
+# 6. CHARTS & DETAILED ANALYSIS
 # ==========================================
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["💵 Real Monthly Net Income", "📊 Household Wealth & Income", "🧮 Income Tax & NI Split", "📋 Year-by-Year Data"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    [
+        "💵 Real Monthly Net Income",
+        "📊 Household Wealth & Income",
+        "🧮 Income Tax & NI Split",
+        "📋 Year-by-Year Data",
+        "🎲 Monte Carlo Simulation",
+    ]
 )
 
 with tab1:
@@ -697,3 +836,48 @@ with tab4:
         ),
         use_container_width=True,
     )
+
+with tab5:
+    st.subheader("🎲 Monte Carlo Simulation (1,000 Stochastic Runs)")
+    st.markdown(
+        "*Models sequence-of-returns risk using 50-year UK historical distributions bounded within **$\mu \\pm 2\\sigma$**.*"
+    )
+
+    col_mc1, col_mc2, col_mc3 = st.columns(3)
+    col_mc1.metric("Stock Return Bounds (Median ± 2σ)", " -24.5% to +45.5%")
+    col_mc2.metric("Inflation Bounds (Median ± 2σ)", " -6.9% to +12.3%")
+    col_mc3.metric("Plan Success Rate", f"{mc_success_rate:.1f}%")
+
+    fig_mc = go.Figure()
+    fig_mc.add_trace(
+        go.Scatter(
+            x=years,
+            y=p90_pots,
+            name="90th Percentile (Optimistic Market)",
+            line=dict(color="#2ca02c", width=2, dash="dash"),
+        )
+    )
+    fig_mc.add_trace(
+        go.Scatter(
+            x=years,
+            y=p50_pots,
+            name="50th Percentile (Median Path)",
+            line=dict(color="#1f77b4", width=3),
+        )
+    )
+    fig_mc.add_trace(
+        go.Scatter(
+            x=years,
+            y=p10_pots,
+            name="10th Percentile (Pessimistic Market / Sequence Risk)",
+            line=dict(color="#d62728", width=2, dash="dash"),
+        )
+    )
+
+    fig_mc.update_layout(
+        xaxis_title="User Age",
+        yaxis_title="Combined Liquid Assets (£)",
+        hovermode="x unified",
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
+    st.plotly_chart(fig_mc, use_container_width=True)
