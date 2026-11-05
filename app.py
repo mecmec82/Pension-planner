@@ -426,26 +426,24 @@ df_proj = pd.DataFrame(
 )
 
 # ==========================================
-# 4. MONTE CARLO SIMULATION LOGIC
+# 4. MONTE CARLO SIMULATION LOGIC (INCOME & DEPLETION)
 # ==========================================
-# Historical parameters (Median +/- 2 Stdevs)
 STOCK_MEDIAN = 0.105
 STOCK_STDEV = 0.175
 INFLATION_MEDIAN = 0.027
 INFLATION_STDEV = 0.048
 
-def run_monte_carlo(num_sims=1000):
-    np.random.seed(42)  # Reproducible stochastic runs
+def run_monte_carlo_income(num_sims=1000):
+    np.random.seed(42)
     n_years = len(years)
 
-    # Truncate normal distribution at +/- 2 Stdevs
     stock_returns = np.random.normal(STOCK_MEDIAN, STOCK_STDEV, (num_sims, n_years))
     stock_returns = np.clip(stock_returns, STOCK_MEDIAN - 2 * STOCK_STDEV, STOCK_MEDIAN + 2 * STOCK_STDEV)
 
     inflation_rates = np.random.normal(INFLATION_MEDIAN, INFLATION_STDEV, (num_sims, n_years))
     inflation_rates = np.clip(inflation_rates, INFLATION_MEDIAN - 2 * INFLATION_STDEV, INFLATION_MEDIAN + 2 * INFLATION_STDEV)
 
-    sim_combined_pots = np.zeros((num_sims, n_years))
+    sim_real_incomes = np.zeros((num_sims, n_years))
     success_count = 0
 
     for i in range(num_sims):
@@ -471,14 +469,12 @@ def run_monte_carlo(num_sims=1000):
             if yr > current_age:
                 mc_property_val *= (1 + r_inf)
 
-            # Age 57 Mortgage Payoff
             if yr == lump_sum_payoff_age:
                 if mc_mortgage_pot > 0:
                     lump_payoff = min(mc_mortgage_pot, mc_user_pot)
                     mc_user_pot -= lump_payoff
                     mc_mortgage_pot = max(0.0, mc_mortgage_pot - lump_payoff)
 
-            # Downsizing
             if yr == downsizing_age:
                 eq = max(0.0, mc_property_val - mc_mortgage_pot)
                 rel = eq * (equity_release_pct / 100)
@@ -486,11 +482,14 @@ def run_monte_carlo(num_sims=1000):
                 mc_property_val -= rel
                 mc_mortgage_pot = max(0.0, mc_mortgage_pot * (1 - (equity_release_pct / 100)))
 
-            # Accumulation
+            u_net_take = 0.0
+            s_net_take = 0.0
+
             if yr < retirement_age:
                 u_net, _, _, u_ee = calculate_take_home(mc_gross_sal, ee_pension_pct, other_sal_sac)
                 u_er = mc_gross_sal * (er_pension_pct / 100)
                 mc_user_pot = mc_user_pot * (1 + r_stock) + (u_ee + u_er)
+                u_net_take = u_net
 
                 if mc_mortgage_pot > 0 and yr != lump_sum_payoff_age:
                     int_amt = mc_mortgage_pot * mortgage_rate
@@ -504,8 +503,8 @@ def run_monte_carlo(num_sims=1000):
                 s_net, _, _, s_ee = calculate_take_home(mc_spouse_sal, spouse_ee_pension_pct, 0.0)
                 s_er = mc_spouse_sal * (spouse_er_pension_pct / 100)
                 mc_spouse_pot = mc_spouse_pot * (1 + r_stock) + (s_ee + s_er)
+                s_net_take = s_net
 
-            # Decumulation
             is_ret = (yr >= retirement_age or curr_spouse_age >= spouse_retirement_age)
             u_st = (state_pension_annual_amount * cum_inflation) if yr >= state_pension_age else 0.0
             s_st = (state_pension_annual_amount * cum_inflation) if curr_spouse_age >= state_pension_age else 0.0
@@ -552,22 +551,32 @@ def run_monte_carlo(num_sims=1000):
                 if curr_spouse_age >= spouse_retirement_age:
                     mc_spouse_pot = max(0.0, mc_spouse_pot * (1 + r_stock))
 
-                if (mc_user_pot + mc_spouse_pot + mc_liquid_cash) <= 0 and yr < end_age:
-                    is_successful = False
+                total_actual_inc = u_draw + s_draw + tot_st + l_draw
+                nominal_monthly_net = total_actual_inc / 12
 
-            sim_combined_pots[i, idx] = mc_user_pot + mc_spouse_pot + mc_liquid_cash
+                # Check if total available income dropped below target due to exhausted pots
+                if total_actual_inc < mc_desired_inc * 0.99 and (mc_user_pot + mc_spouse_pot + mc_liquid_cash) <= 0:
+                    is_successful = False
+            else:
+                combined_annual_net = u_net_take + s_net_take
+                annual_mortgage_outflow = annual_mortgage_payment if mc_mortgage_pot > 0 else 0.0
+                net_after_payments = max(0.0, combined_annual_net - annual_mortgage_outflow)
+                nominal_monthly_net = net_after_payments / 12
+
+            real_monthly_net = nominal_monthly_net / cum_inflation
+            sim_real_incomes[i, idx] = real_monthly_net
 
         if is_successful:
             success_count += 1
 
     success_rate = (success_count / num_sims) * 100
-    p10 = np.percentile(sim_combined_pots, 10, axis=0)
-    p50 = np.percentile(sim_combined_pots, 50, axis=0)
-    p90 = np.percentile(sim_combined_pots, 90, axis=0)
+    inc_p10 = np.percentile(sim_real_incomes, 10, axis=0)
+    inc_p50 = np.percentile(sim_real_incomes, 50, axis=0)
+    inc_p90 = np.percentile(sim_real_incomes, 90, axis=0)
 
-    return p10, p50, p90, success_rate
+    return inc_p10, inc_p50, inc_p90, success_rate
 
-p10_pots, p50_pots, p90_pots, mc_success_rate = run_monte_carlo(1000)
+inc_p10, inc_p50, inc_p90, mc_success_rate = run_monte_carlo_income(1000)
 
 # ==========================================
 # 5. DASHBOARD DISPLAY & METRICS
@@ -599,9 +608,9 @@ with col_m3:
 
 with col_m4:
     st.metric(
-        label="Monte Carlo Success Rate",
+        label="Monte Carlo Income Success Rate",
         value=f"{mc_success_rate:.1f}%",
-        help="1,000 simulations using 50-yr median +/- 2 stdev market & inflation distributions",
+        help="Percentage of 1,000 runs where income successfully met desired target through retirement horizon.",
     )
 
 st.markdown("---")
@@ -615,7 +624,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
         "📊 Household Wealth & Income",
         "🧮 Income Tax & NI Split",
         "📋 Year-by-Year Data",
-        "🎲 Monte Carlo Simulation",
+        "🎲 Monte Carlo Income Simulation",
     ]
 )
 
@@ -838,46 +847,55 @@ with tab4:
     )
 
 with tab5:
-    st.subheader("🎲 Monte Carlo Simulation (1,000 Stochastic Runs)")
+    st.subheader("🎲 Monte Carlo Income Simulation (1,000 Stochastic Runs)")
     st.markdown(
-        "*Models sequence-of-returns risk using 50-year UK historical distributions bounded within **$\mu \\pm 2\\sigma$**.*"
+        "*Models sequence-of-returns risk on your **Real Monthly Net Income** using 50-year UK historical distributions ($\mu \pm 2\sigma$). Shows when income falls short due to pension exhaustion.*"
     )
 
     col_mc1, col_mc2, col_mc3 = st.columns(3)
     col_mc1.metric("Stock Return Bounds (Median ± 2σ)", " -24.5% to +45.5%")
     col_mc2.metric("Inflation Bounds (Median ± 2σ)", " -6.9% to +12.3%")
-    col_mc3.metric("Plan Success Rate", f"{mc_success_rate:.1f}%")
+    col_mc3.metric("Income Plan Success Rate", f"{mc_success_rate:.1f}%")
 
-    fig_mc = go.Figure()
-    fig_mc.add_trace(
+    fig_mc_inc = go.Figure()
+    fig_mc_inc.add_trace(
         go.Scatter(
             x=years,
-            y=p90_pots,
-            name="90th Percentile (Optimistic Market)",
+            y=inc_p90,
+            name="90th Percentile (Optimistic Income)",
             line=dict(color="#2ca02c", width=2, dash="dash"),
         )
     )
-    fig_mc.add_trace(
+    fig_mc_inc.add_trace(
         go.Scatter(
             x=years,
-            y=p50_pots,
-            name="50th Percentile (Median Path)",
+            y=inc_p50,
+            name="50th Percentile (Median Income Path)",
             line=dict(color="#1f77b4", width=3),
         )
     )
-    fig_mc.add_trace(
+    fig_mc_inc.add_trace(
         go.Scatter(
             x=years,
-            y=p10_pots,
-            name="10th Percentile (Pessimistic Market / Sequence Risk)",
+            y=inc_p10,
+            name="10th Percentile (Pessimistic Income / Pension Run-Out Risk)",
             line=dict(color="#d62728", width=2, dash="dash"),
         )
     )
 
-    fig_mc.update_layout(
+    # Reference target line
+    fig_mc_inc.add_hline(
+        y=target_monthly_net_real,
+        line_dash="dot",
+        line_color="red",
+        annotation_text=f"Target Net Income (£{target_monthly_net_real:,.0f}/mo)",
+        annotation_position="bottom right",
+    )
+
+    fig_mc_inc.update_layout(
         xaxis_title="User Age",
-        yaxis_title="Combined Liquid Assets (£)",
+        yaxis_title="Real Monthly Net Income (£ / month)",
         hovermode="x unified",
         margin=dict(l=0, r=0, t=30, b=0),
     )
-    st.plotly_chart(fig_mc, use_container_width=True)
+    st.plotly_chart(fig_mc_inc, use_container_width=True)
